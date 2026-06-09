@@ -1,0 +1,7 @@
+Title: Crash on startup after upgrading to 0.4.0
+
+After upgrading from 0.3.2 to 0.4.0 the app crashes immediately on launch
+with `KeyError: 'cache_dir'`. Rolling back to 0.3.2 fixes it. I did not
+change my config file between versions.
+
+Environment: Linux, Python 3.11, installed via pip.

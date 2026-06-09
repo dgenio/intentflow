@@ -33,6 +33,18 @@ become:
 
 ### Why it is not just Python / LangChain / prompt templates
 
+IntentFlow is **not** trying to replace Python. Python programs *deterministic
+computation*; IntentFlow programs *governed cognition*. They compose — an
+IntentFlow goal can call Python functions as governed actions, and Python can
+compile and run an IntentFlow goal.
+
+| | What you write | Determinism | Where governance lives | Auditable? |
+| --- | --- | --- | --- | --- |
+| **Python function** | exact instructions | fully deterministic | in your code | yes, but it isn't cognition |
+| **Prompt template** | interpolated strings | none | inside prose the model may ignore | no — output only |
+| **Agent framework** | functions to wire up | partial | in your head + your prompts | partial, ad-hoc logging |
+| **IntentFlow goal** | declared evidence, actions, checks, uncertainty | governed: gates & checks outside the model | in the *program text* — compiled & enforced | yes — every run emits a replayable witness |
+
 - **Not a framework.** Frameworks give you functions to call; the governance
   still lives in your head and your prompts. IntentFlow makes governance the
   *program text* — diffable, reviewable, lintable.
@@ -41,6 +53,13 @@ become:
   is a machine-enforced policy, not a sentence the model might ignore.
 - **Not a chatbot wrapper.** There is no chat loop. There is a plan with
   phases, gates, and checks, and a trace of what actually happened.
+
+Concretely, an IntentFlow goal compiles into an **agent plan**: a JSON
+execution plan with a staged prompt plan (one inspectable block per concern —
+system role, objective, evidence, allowed actions, denied actions,
+verification, uncertainty handling, output format), an action policy the
+runtime enforces *outside* the model, and a risk profile a reviewer reads
+before approving a run.
 
 ## Core thesis
 
@@ -141,22 +160,28 @@ format that agree with each other — which is exactly what IntentFlow is.
   `OutputSpec`.
 - **Compiler** to a JSON execution plan: normalized objective, evidence by
   stance, allowed / approval-gated / denied actions, **typed verification
-  checks** (machine-checkable vs LLM-judged — the distinction is part of
-  the plan), uncertainty policy, **calibration policy**, output contract,
-  and a staged prompt plan (frame → evidence → model → verify → output).
+  checks** (machine-checkable `cites_evidence` / `requires_phrase` /
+  `threshold_check` vs LLM-judged — the distinction is part of the plan),
+  uncertainty policy, **calibration policy**, a **risk profile**, output
+  contract, and a **staged prompt plan** with one inspectable block per
+  governance concern (system → objective → evidence → allowed actions →
+  denied actions → verify → uncertainty → output).
 - **Goal composition**: pipelines whose evidence chains
   (`require DiagnoseIncident.root_cause`) are **statically checked** — a
   stage cannot require an output no earlier stage produces.
 - **Static analysis** (`intentflow lint`): destructive actions allowed
   without safeguards, unreachable or duplicate uncertainty thresholds,
   conditions and rules that cannot be enforced.
-- **Governed runtime**: cognition is a pluggable backend
-  (deterministic simulation, or a real Claude model via
-  `--backend anthropic`), but governance is not pluggable — evidence
+- **Governed runtime**: cognition is a pluggable backend — deterministic
+  simulation (default), a real Claude model via `--backend anthropic`, or any
+  OpenAI-compatible endpoint via `--backend openai` (OpenAI, Azure, local
+  vLLM/Ollama through env vars) — but governance is not pluggable. Evidence
   collection runs through the action gate, raw confidence is calibrated
   before uncertainty rules fire, judged verification rules are recorded as
   *skipped*, never silently passed, and `ask_human` / approval gates are
-  control flow.
+  control flow. Each run also returns a flat **summary** (confidence,
+  verification status, uncertainty status, actions requested/blocked,
+  trace id).
 - **Real governed tools**: with `--workspace`, evidence sources are
   collected by real read-only tools through the gate; a goal that requires
   `logs` but does not allow `read_logs` gets a traced `action_blocked`, not
@@ -165,38 +190,50 @@ format that agree with each other — which is exactly what IntentFlow is.
   of any run result against the program, including tamper detection
   (covered by tests: hidden verification failures, unapproved gated
   actions, dangling citations, broken trace sequences are all caught).
-- **CLI**: `parse`, `validate`, `lint`, `compile`, `run`, `audit`.
+- **Developer tooling** (`intentflow format`, `intentflow inspect`): an
+  idempotent, comment-preserving formatter and an at-a-glance summary of a
+  goal's sections, actions, evidence, output fields, and warnings.
+- **CLI**: `parse`, `validate` (`--json`), `lint`, `compile`, `inspect`,
+  `format` (`--check` / `--write`), `run` (`--trace-dir` writes an auditable
+  witness), `audit`.
 
 ## Install & use
 
 ```bash
-pip install -e ".[dev]"          # add ".[dev,llm]" for the Anthropic backend
+pip install -e ".[dev]"          # add llm/openai extras for real backends:
+#   pip install -e ".[dev,llm]"     -> Anthropic backend
+#   pip install -e ".[dev,openai]"  -> OpenAI-compatible backend
 
 intentflow parse    examples/diagnose.iflow      # print the AST as JSON
-intentflow validate examples/diagnose.iflow      # semantic checks
+intentflow validate examples/diagnose.iflow      # semantic checks (--json too)
 intentflow lint     examples/diagnose.iflow      # static policy analysis
+intentflow inspect  examples/diagnose.iflow      # goals, actions, evidence, warnings
+intentflow format   examples/diagnose.iflow --check   # check canonical formatting
 intentflow compile  examples/diagnose.iflow      # print the execution plan
 
 # simulated cognition, real governed evidence collection, saved witness:
-intentflow run examples/diagnose.iflow --simulate \
-    --workspace examples/workspace --trace-out result.json
+intentflow run examples/diagnose.iflow --backend simulate \
+    --workspace examples/workspace --trace-dir traces/
 
 # independently verify the run stayed inside the program's envelope:
-intentflow audit examples/diagnose.iflow result.json
+intentflow audit examples/diagnose.iflow traces/DiagnoseProductionIssue-*.json
 
 # composed goals with a statically checked evidence chain:
 intentflow run examples/incident_pipeline.iflow --simulate \
     --pipeline IncidentResponse
 
-# real model cognition behind the same governance (needs ANTHROPIC_API_KEY):
-intentflow run examples/diagnose.iflow --backend anthropic \
-    --workspace examples/workspace
+# real model cognition behind the same governance:
+intentflow run examples/diagnose.iflow --backend anthropic   # ANTHROPIC_API_KEY
+OPENAI_MODEL=gpt-4o-mini \
+intentflow run examples/diagnose.iflow --backend openai      # OPENAI_API_KEY,
+                                                              # OPENAI_BASE_URL
 
 python -m pytest                                  # run the test suite
 ```
 
-Four examples ship with the repo: `examples/diagnose.iflow`,
-`examples/code_review.iflow`, `examples/research_question.iflow`, and
+Five examples ship with the repo: `examples/diagnose.iflow`,
+`examples/code_review.iflow`, `examples/research_question.iflow`,
+`examples/triage_issue.iflow` (governed open-source issue triage), and
 `examples/incident_pipeline.iflow` (two goals composed into a pipeline),
 plus `examples/workspace/` with real evidence files for governed
 collection.
@@ -205,7 +242,8 @@ collection.
 
 This is an **experimental prototype**. The default backend mocks cognition
 deterministically so the *control structure* of the language is testable
-end to end; the Anthropic backend is real but young. Calibration is a
+end to end; the Anthropic and OpenAI-compatible backends are real but young
+(they share one governance path with the simulator). Calibration is a
 placeholder shrinkage map, not a learned one. The grammar is intentionally
 minimal. The value today is the shape of the abstraction: a compiled,
 inspectable plan, governance enforced outside the model, and runs whose
@@ -242,12 +280,13 @@ intentflow/
   parser.py       .iflow -> AST (goals + pipelines)
   compiler.py     AST -> validated execution plan (JSON), pipeline checking
   linter.py       static analysis of policies
-  backends.py     pluggable cognition (simulated / Anthropic)
+  backends.py     pluggable cognition (simulate / Anthropic / OpenAI-compatible)
+  formatter.py    idempotent, comment-preserving source formatter
   tools.py        governed tools + the ActionGate enforcement point
   runtime.py      phase-machine runtime with calibration and audit trace
   auditor.py      trace conformance checking (the contract/witness story)
-  cli.py          intentflow parse|validate|lint|compile|run|audit
-examples/         four demonstration programs + a real evidence workspace
+  cli.py          parse|validate|lint|compile|inspect|format|run|audit
+examples/         five demonstration programs + a real evidence workspace
 tests/            parser, compiler, runtime, tools, pipeline, lint, audit, CLI
 docs/             architecture notes
 ```

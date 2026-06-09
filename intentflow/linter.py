@@ -22,25 +22,13 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 from intentflow.compiler import (
+    DESTRUCTIVE_TOKENS,
     classify_verification,
     extract_actions,
     extract_uncertainty,
     extract_verification,
 )
 from intentflow.iflow_ast import Goal, Program
-
-#: Verbs that suggest an action mutates the outside world.
-DESTRUCTIVE_TOKENS: tuple[str, ...] = (
-    "deploy",
-    "delete",
-    "drop",
-    "push",
-    "write",
-    "merge",
-    "force",
-    "shutdown",
-    "restart",
-)
 
 #: Symbolic uncertainty conditions the runtime knows how to evaluate.
 EVALUABLE_CONDITIONS: tuple[str, ...] = ("competing_hypotheses",)

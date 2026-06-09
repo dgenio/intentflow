@@ -26,7 +26,8 @@ PLAN_KEYS = {
     "uncertainty_policy",
     "calibration",
     "outputs",
-    "trace",
+    "risk_profile",
+    "trace_policy",
     "prompt_plan",
 }
 
@@ -47,7 +48,7 @@ def test_plan_has_expected_shape(diagnose_plan: dict) -> None:
         "recommended_fix",
         "risk",
     ]
-    assert diagnose_plan["trace"]["enabled"] is True
+    assert diagnose_plan["trace_policy"]["enabled"] is True
 
 
 def test_evidence_stances_are_separated(diagnose_plan: dict) -> None:
@@ -87,9 +88,45 @@ def test_uncertainty_rule_extraction() -> None:
 
 def test_prompt_plan_is_staged(diagnose_plan: dict) -> None:
     phases = [step["phase"] for step in diagnose_plan["prompt_plan"]]
-    assert phases == ["frame", "evidence", "model", "verify", "output"]
-    frame = diagnose_plan["prompt_plan"][0]["instruction"]
-    assert "deploy_change" in frame  # approval gating is visible in the prompt
+    assert phases == [
+        "system",
+        "objective",
+        "evidence",
+        "actions_allowed",
+        "actions_denied",
+        "verify",
+        "uncertainty",
+        "output",
+    ]
+    blocks = {step["phase"]: step["instruction"] for step in diagnose_plan["prompt_plan"]}
+    # approval gating is a visible, separate block in the compiled interaction
+    assert "deploy_change" in blocks["actions_allowed"]
+    assert diagnose_plan["prompt_plan"][0]["role"] == "system"
+
+
+def test_risk_profile_is_part_of_the_plan(diagnose_plan: dict) -> None:
+    risk = diagnose_plan["risk_profile"]
+    # deploy_change is approval-gated -> medium risk, requires human approval
+    assert risk["level"] == "medium"
+    assert risk["requires_human_approval"] is True
+    assert risk["approval_gated_actions"] == ["deploy_change"]
+
+
+def test_threshold_check_verification_is_machine_checkable() -> None:
+    source = (
+        "goal G {\n  objective:\n    x\n"
+        "  verify:\n    check confidence >= 0.7\n"
+        "  output:\n    answer\n}\n"
+    )
+    plan = compile_goal(parse_source(source).goals[0]).to_dict()
+    check = plan["verification"][0]["check"]
+    assert check == {
+        "kind": "threshold_check",
+        "metric": "confidence",
+        "op": ">=",
+        "value": 0.7,
+        "mode": "machine",
+    }
 
 
 def test_verification_rules_get_ids_and_typed_checks(diagnose_plan: dict) -> None:
@@ -160,6 +197,31 @@ def test_missing_evidence_and_verify_produce_warnings() -> None:
 
 
 def test_examples_validate_cleanly() -> None:
-    for name in ("diagnose", "code_review", "research_question"):
+    for name in ("diagnose", "code_review", "research_question",
+                 "incident_pipeline", "triage_issue"):
         diagnostics = validate_program(parse_file(f"examples/{name}.iflow"))
         assert not [d for d in diagnostics if d.level == "error"], name
+
+
+def test_undeclared_uncertainty_action_is_a_warning() -> None:
+    # 'reboot_server' is neither an escalation primitive nor an allowed action.
+    source = (
+        "goal G {\n  objective:\n    x\n"
+        "  uncertainty:\n    if confidence < 0.5 reboot_server\n"
+        "  output:\n    result\n}\n"
+    )
+    diagnostics = validate_program(parse_source(source))
+    assert any(
+        d.level == "warning" and "reboot_server" in d.message for d in diagnostics
+    )
+
+
+def test_allowed_uncertainty_action_is_not_warned() -> None:
+    source = (
+        "goal G {\n  objective:\n    x\n"
+        "  actions:\n    allow run_canary\n"
+        "  uncertainty:\n    if confidence < 0.5 run_canary\n"
+        "  output:\n    result\n}\n"
+    )
+    diagnostics = validate_program(parse_source(source))
+    assert not any("run_canary" in d.message for d in diagnostics)

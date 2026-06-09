@@ -25,13 +25,27 @@ from intentflow.iflow_ast import (
     VerificationRule,
 )
 from intentflow.parser import ParseError, parse_file, parse_source
-from intentflow.compiler import CompileError, compile_goal, compile_program, validate_program
+from intentflow.compiler import (
+    CompileError,
+    compile_goal,
+    compile_program,
+    inspect_program,
+    validate_program,
+)
 from intentflow.auditor import audit_document, audit_result
-from intentflow.backends import AnthropicCognition, SimulatedCognition, make_backend
+from intentflow.backends import (
+    AnthropicCognition,
+    OpenAICompatibleBackend,
+    OpenAICompatibleCognition,
+    SimulatedCognition,
+    SimulatorBackend,
+    make_backend,
+)
+from intentflow.formatter import format_file, format_source
 from intentflow.linter import lint_program
 from intentflow.runtime import GoalRuntime, SimulationRuntime, run_pipeline
 
-__version__ = "0.2.0"
+__version__ = "0.3.0"
 
 __all__ = [
     "ActionPolicy",
@@ -41,6 +55,8 @@ __all__ = [
     "EvidenceRequirement",
     "Goal",
     "GoalRuntime",
+    "OpenAICompatibleBackend",
+    "OpenAICompatibleCognition",
     "OutputSpec",
     "ParseError",
     "Pipeline",
@@ -48,6 +64,7 @@ __all__ = [
     "Section",
     "SimulatedCognition",
     "SimulationRuntime",
+    "SimulatorBackend",
     "Statement",
     "UncertaintyRule",
     "VerificationRule",
@@ -55,6 +72,9 @@ __all__ = [
     "audit_result",
     "compile_goal",
     "compile_program",
+    "format_file",
+    "format_source",
+    "inspect_program",
     "lint_program",
     "make_backend",
     "parse_file",

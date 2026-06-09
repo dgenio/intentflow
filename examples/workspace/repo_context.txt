@@ -1,0 +1,9 @@
+CHANGELOG 0.4.0:
+- Introduced a unified cache layer (config key 'cache_dir').
+- config.load() now reads required keys eagerly.
+
+Known related code: src/config.py raises KeyError when a required key is
+absent instead of falling back to a default. No default for 'cache_dir' was
+added, and CHANGELOG/migration notes do not mention the new required key.
+
+Open milestones: 0.4.1 (bugfixes).

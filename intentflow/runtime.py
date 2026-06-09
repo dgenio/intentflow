@@ -18,6 +18,8 @@ lives here, outside the model:
 
 from __future__ import annotations
 
+import hashlib
+import json
 import operator
 from typing import Any, Callable
 
@@ -135,16 +137,55 @@ class GoalRuntime:
         outputs = self._produce_outputs(verification)
 
         self.trace.record("done", "run_completed", {"status": "completed"})
+        trace_events = self.trace.to_list()
+        summary = self._summarize(verification, trace_events)
         return {
             "goal": self.plan["goal"],
             "backend": self.backend.name,
             "status": "completed",
             "outputs": outputs,
+            "summary": summary,
+            "trace_id": summary["trace_id"],
             "hypotheses": [h.to_dict() for h in self.hypotheses],
             "evidence": self.evidence,
             "verification": verification,
             "escalations": self.escalations,
-            "trace": self.trace.to_list(),
+            "trace": trace_events,
+        }
+
+    def _summarize(
+        self, verification: dict[str, Any], trace_events: list[dict[str, Any]]
+    ) -> dict[str, Any]:
+        """A flat, human-first summary of the run: what was decided, which
+        actions ran, which were blocked. ``trace_id`` is a deterministic hash
+        of the plan and trace so identical runs produce identical ids (the
+        wall-clock timestamp lives only in the saved trace artifact)."""
+        requested = [
+            e["detail"]["action"]
+            for e in trace_events
+            if e["event"] == "tool_invoked"
+        ]
+        blocked = [
+            {"action": e["detail"].get("action"), "reason": e["detail"].get("reason")}
+            for e in trace_events
+            if e["event"] in ("action_blocked", "approval_denied")
+        ]
+        top = self._top()
+        digest = hashlib.sha256(
+            json.dumps(
+                {"plan": self.plan, "trace": trace_events},
+                sort_keys=True,
+                default=str,
+            ).encode("utf-8")
+        ).hexdigest()[:16]
+        return {
+            "trace_id": digest,
+            "confidence": round(top.confidence, 3) if top else None,
+            "verification_status": "passed" if verification["passed"] else "failed",
+            "uncertainty_status": "escalated" if self.escalations else "clear",
+            "actions_requested": requested,
+            "actions_blocked": blocked,
+            "escalation_count": len(self.escalations),
         }
 
     def _apply_context_policy(self) -> None:
@@ -361,6 +402,14 @@ class GoalRuntime:
             if self.proposed_fix and phrase in self.proposed_fix.lower():
                 return "pass", f"proposal includes required phrase '{phrase}'"
             return "fail", f"proposal missing required phrase '{phrase}'"
+        if kind == "threshold_check":
+            metric, op, value = check["metric"], check["op"], check["value"]
+            top = self._top()
+            if metric != "confidence" or top is None:
+                return "skipped", f"metric '{metric}' not evaluable by the runtime"
+            ok = _OPS[op](top.confidence, value)
+            note = f"confidence {top.confidence:.2f} {op} {value}"
+            return ("pass" if ok else "fail"), note
         # Judged rules need an LLM judge; recording them as skipped keeps the
         # trust boundary honest — they are never silently assumed to pass.
         return "skipped", "judged rule; requires an LLM judge (recorded, not evaluated)"
@@ -396,6 +445,12 @@ class GoalRuntime:
             "open_questions": [
                 h.statement for h in self.hypotheses[1:] if h.confidence >= 0.3
             ],
+            "summary": f"[simulated] {top.statement}",
+            "likely_cause": top.statement,
+            "suggested_response": self.proposed_fix
+            or f"Thanks for the report — based on {top.hypothesis_id}, {top.statement}",
+            "proposed_labels": ["needs-triage"]
+            + (["needs-reproduction"] if confidence < 0.7 else ["confirmed"]),
         }
         return known.get(name, f"[unmapped] value for '{name}'")
 

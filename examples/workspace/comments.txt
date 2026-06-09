@@ -1,0 +1,7 @@
+@maintainer: Can you paste your full config file and the complete traceback?
+
+@reporter: Here is the traceback — it fails in config.load() when reading
+'cache_dir', which my config does not set. It worked fine on 0.3.2.
+
+@other-user: I hit the same thing. Looks like 0.4.0 made 'cache_dir'
+required but the migration guide does not mention it.

@@ -139,5 +139,17 @@ class ToolRegistry:
                     handler=reader,
                     description="read review artifacts from the workspace",
                 ),
+                Tool(
+                    action="read_issue",
+                    serves=("issue_body", "comments"),
+                    handler=reader,
+                    description="read an issue and its comments from the workspace",
+                ),
+                Tool(
+                    action="search_repo",
+                    serves=("repo_context", "related_issues"),
+                    handler=reader,
+                    description="read repository context from the workspace",
+                ),
             ]
         )

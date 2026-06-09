@@ -47,11 +47,20 @@ wants to analyze, optimize, or enforce agent behavior operates here.
 ### IR → Execution plan (`compiler.py`)
 
 The plan is plain JSON: normalized objective, evidence by stance, actions by
-governance mode, the verification checklist with stable rule ids, the
-uncertainty policy, the output contract, trace configuration, and a *staged*
-prompt plan (frame → evidence → model → verify → output). Staging matters:
-each phase is a separate, governed interaction rather than one opaque
-mega-prompt, so the runtime can gate between phases.
+governance mode, the verification checklist with stable rule ids and typed
+checks, the uncertainty policy, the output contract, a **risk profile**
+(level + factors derived from the action/verification policy), a trace policy,
+and a *staged* prompt plan. The prompt plan has one inspectable block per
+governance concern — `system`, `objective`, `evidence`, `actions_allowed`,
+`actions_denied`, `verify`, `uncertainty`, `output` — instead of one opaque
+mega-prompt, so *what the model is told about each concern* is diffable
+before any model runs, and a backend assembles those blocks into a concrete
+call (`backends.assemble_messages`).
+
+Typed verification checks come in three machine-checkable flavors —
+`cites_evidence`, `requires_phrase`, and `threshold_check`
+(`check confidence >= 0.7`) — plus `judged` rules that need an LLM judge and
+are recorded as skipped, never silently passed.
 
 Semantic validation runs before plan emission: missing objectives,
 conflicting action policies, malformed uncertainty rules, and out-of-range
@@ -62,11 +71,15 @@ are warnings.
 
 The runtime is an explicit phase machine
 (context → actions → evidence → model → uncertainty → verify → output).
-Cognition is a pluggable backend behind one narrow contract —
-``propose(plan, evidence) -> Proposal`` — with two implementations:
-deterministic simulation (the conformance reference; no network, no
-flakiness) and a real Claude backend driving the staged prompt plan.
-Governance is **not** pluggable. It lives outside the backend:
+Cognition is a pluggable backend behind one narrow, provider-agnostic
+contract — ``propose(plan, evidence) -> Proposal`` — with three
+implementations: deterministic simulation (the conformance reference; no
+network, no flakiness), a real Claude backend, and an OpenAI-compatible
+backend (OpenAI, Azure, or local servers such as vLLM/Ollama via
+`OPENAI_BASE_URL`). All three assemble the same staged prompt plan and parse
+the same strict-JSON reply, so adding a provider is one class and none can
+opt out of governance. Governance is **not** pluggable. It lives outside the
+backend:
 
 1. **The ActionGate is the enforcement point.** Every tool invocation —
    including evidence collection from a workspace — goes through the gate,

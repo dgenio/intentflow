@@ -51,7 +51,7 @@ def test_statement_line_numbers_are_recorded() -> None:
 
 
 def test_parse_example_files() -> None:
-    for name in ("diagnose", "code_review", "research_question"):
+    for name in ("diagnose", "code_review", "research_question", "triage_issue"):
         program = parse_file(f"examples/{name}.iflow")
         assert program.goals, name
 
