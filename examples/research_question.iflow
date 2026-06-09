@@ -1,0 +1,47 @@
+# Answer a research question with sourced claims only.
+# Demonstrates: distrusted sources, symbolic uncertainty conditions,
+# open questions as a first-class output.
+
+goal AnswerResearchQuestion {
+  objective:
+    answer the research question with claims that are traceable to sources
+
+  context:
+    max_tokens 20000
+    prefer primary_sources
+    preserve user_question
+
+  evidence:
+    require primary_sources
+    require recent_publications
+    prefer replication_studies
+    distrust unverified_claims
+    distrust single_anecdotes
+
+  model:
+    propose answers with confidence
+    separate observation from inference
+    state assumptions explicitly
+
+  actions:
+    allow web_search
+    allow read_papers
+    allow summarize_sources
+    require_approval contact_external_expert
+
+  verify:
+    each claim must cite at least one source
+    conflicting sources must be reported not hidden
+    confidence must reflect source quality
+
+  uncertainty:
+    if confidence < 0.5 ask_human
+    if conflicting_sources remain present_both_views
+    if competing_hypotheses remain run_discriminating_test
+
+  output:
+    answer
+    confidence
+    sources
+    open_questions
+}

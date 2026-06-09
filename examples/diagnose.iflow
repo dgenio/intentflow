@@ -1,0 +1,42 @@
+# Diagnose a failing production job.
+# Demonstrates: evidence gating, competing-hypothesis handling,
+# approval-gated actions, and verification with rollback requirements.
+
+goal DiagnoseProductionIssue {
+  objective:
+    identify the most likely root cause of a failing production job
+
+  context:
+    max_tokens 12000
+    prefer recent_logs
+    preserve user_decisions
+
+  evidence:
+    require logs
+    require config
+    require recent_commits
+    distrust speculation_without_sources
+
+  model:
+    propose hypotheses with confidence
+    separate observation from inference
+
+  actions:
+    allow read_logs
+    allow inspect_code
+    require_approval deploy_change
+
+  verify:
+    each hypothesis must cite evidence
+    proposed fix must include rollback path
+
+  uncertainty:
+    if confidence < 0.7 ask_human
+    if competing_hypotheses remain run_discriminating_test
+
+  output:
+    root_cause
+    confidence
+    recommended_fix
+    risk
+}

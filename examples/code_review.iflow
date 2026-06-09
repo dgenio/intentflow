@@ -1,0 +1,46 @@
+# Review a pull request as a governed process, not a vibe check.
+# Demonstrates: denied actions, approval gating, evidence-cited findings.
+
+goal ReviewPullRequest {
+  objective:
+    review the proposed change for correctness regressions and risky behavior
+
+  context:
+    max_tokens 16000
+    prefer changed_files
+    preserve reviewer_guidelines
+
+  evidence:
+    require diff
+    require test_results
+    require style_guide
+    prefer related_issue_history
+    distrust author_self_assessment
+
+  model:
+    propose findings with confidence
+    separate observation from inference
+    classify each finding as bug, risk, or style
+
+  actions:
+    allow read_diff
+    allow run_tests
+    allow read_ci_logs
+    require_approval push_changes
+    deny force_push
+
+  verify:
+    each finding must cite diff evidence
+    blocking findings must include a suggested remedy
+    test claims must match test_results evidence
+
+  uncertainty:
+    if confidence < 0.6 ask_human
+    if competing_hypotheses remain run_discriminating_test
+
+  output:
+    findings
+    risk
+    recommendation
+    confidence
+}

@@ -1,0 +1,75 @@
+# A two-stage pipeline: diagnosis feeds remediation.
+# Demonstrates goal composition with a statically checked evidence chain:
+# ProposeRemediation requires DiagnoseIncident.root_cause, which the
+# compiler verifies is produced by an earlier stage.
+
+goal DiagnoseIncident {
+  objective:
+    identify the most likely root cause of the reported incident
+
+  context:
+    max_tokens 12000
+    prefer recent_logs
+
+  evidence:
+    require logs
+    require config
+    distrust speculation_without_sources
+
+  model:
+    propose hypotheses with confidence
+    separate observation from inference
+
+  actions:
+    allow read_logs
+    allow inspect_code
+
+  verify:
+    each hypothesis must cite evidence
+
+  uncertainty:
+    if confidence < 0.7 ask_human
+    if competing_hypotheses remain run_discriminating_test
+
+  output:
+    root_cause
+    confidence
+}
+
+goal ProposeRemediation {
+  objective:
+    propose a safe remediation for the diagnosed root cause
+
+  context:
+    max_tokens 8000
+    preserve human_decisions
+
+  evidence:
+    require DiagnoseIncident.root_cause
+    require config
+
+  model:
+    propose remediations with confidence
+    separate observation from inference
+
+  actions:
+    allow inspect_code
+    require_approval deploy_change
+
+  verify:
+    each hypothesis must cite evidence
+    proposed fix must include rollback path
+
+  uncertainty:
+    if confidence < 0.6 ask_human
+
+  output:
+    recommended_fix
+    risk
+    confidence
+}
+
+pipeline IncidentResponse {
+  stage DiagnoseIncident
+  stage ProposeRemediation
+}
