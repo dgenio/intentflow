@@ -58,51 +58,89 @@ conflicting action policies, malformed uncertainty rules, and out-of-range
 confidence thresholds are errors; missing evidence or verification sections
 are warnings.
 
-### Plan → Execution (`runtime.py`)
+### Plan → Execution (`runtime.py`, `backends.py`, `tools.py`)
 
-The runtime is an explicit phase machine. Today all cognition is mocked
-deterministically, which is a feature, not a stopgap: it lets the control
-structure — evidence gating, escalation, discriminating tests, verification
-failures — be tested end to end without network access or flaky model
-output. A real LLM backend must keep the same phase contract and trace
-format and replace only the mocked cognition.
+The runtime is an explicit phase machine
+(context → actions → evidence → model → uncertainty → verify → output).
+Cognition is a pluggable backend behind one narrow contract —
+``propose(plan, evidence) -> Proposal`` — with two implementations:
+deterministic simulation (the conformance reference; no network, no
+flakiness) and a real Claude backend driving the staged prompt plan.
+Governance is **not** pluggable. It lives outside the backend:
 
-Two invariants the runtime maintains:
+1. **The ActionGate is the enforcement point.** Every tool invocation —
+   including evidence collection from a workspace — goes through the gate,
+   which consults the compiled action policy. Denied or unlisted actions
+   raise; approval-gated actions fail closed without a grant; every
+   decision is traced. The gate never reads model output, so the model
+   cannot negotiate with it.
+2. **Confidence is calibrated before rules fire.** Backends report raw
+   confidence; the runtime applies the plan's calibration policy (a
+   shrinkage placeholder today, a learned map later) and uncertainty rules
+   evaluate the calibrated value. Both numbers appear in the trace.
+3. **Verification is typed.** The compiler classifies each rule as
+   machine-checkable (`cites_evidence`, `requires_phrase`) or judged.
+   Machine checks are evaluated against structured state; judged checks are
+   recorded as *skipped* — never silently assumed to pass.
+4. **The trace is append-only and complete.** Every phase, rule
+   evaluation, escalation, gate decision, and check lands in the trace with
+   a sequence number, as an independent snapshot (never a live reference to
+   mutable state).
+5. **Uncertainty actions are control flow.** `ask_human` produces an
+   escalation record; `run_discriminating_test` mutates hypothesis
+   confidences and re-ranks. Rules without an evaluator are recorded, never
+   silently dropped.
 
-1. **The trace is append-only and complete.** Every phase, every rule
-   evaluation, every escalation, and every check lands in the trace with a
-   sequence number. The trace is part of the result, not a side channel.
-2. **Uncertainty actions are control flow.** `ask_human` produces an
-   escalation record (simulated approval today, a blocking interaction
-   tomorrow); `run_discriminating_test` mutates hypothesis confidences and
-   re-ranks. Rules without a simulator are recorded, never silently dropped.
+### Composition (`pipeline` blocks)
+
+Goals compose into linear pipelines. A later stage may require
+``GoalName.field`` as evidence; the compiler statically checks that the
+named goal runs earlier and declares that output. At runtime the upstream
+output value is seeded as evidence (origin ``pipeline:GoalName``), and the
+combined trace tags every event with its stage.
+
+### Execution → Audit (`auditor.py`)
+
+This is the layer that makes the whole stack more than a config schema.
+The program is a **contract**; the trace is a **witness**; the auditor is
+an **independent verifier**. ``intentflow audit`` recompiles the source and
+replays a result against it, checking: no denied action ran (A3), gated
+actions have prior approval grants (A2), only allowed actions ran (A1), the
+trace is append-only and in canonical phase order (T1/T2), citations point
+at collected evidence (E1), every uncertainty rule was evaluated or
+recorded (U1), every verification rule was checked and no failure was
+hidden from the result (V1), and the output contract was met exactly (O1).
+
+Because the auditor needs only the source and the result JSON, conformance
+can be verified without trusting the runtime, the backend, or the model —
+proof-carrying agent behavior, in the spirit of audit logs + seccomp
+profiles for processes.
 
 ## Future directions
 
-- **Real LLM backend.** A `runtime` implementation that drives the staged
-  prompt plan against an actual model, parsing structured hypothesis /
-  confidence / citation output and feeding it through the same uncertainty
-  and verification machinery. The simulator becomes the conformance test for
-  this backend.
-- **Tool adapters.** `allow read_logs` should bind to a registered, sandboxed
-  tool with a schema. `require_approval` becomes a real blocking gate; `deny`
-  becomes unreachable code for the agent, enforced outside the model.
+- **Blocking approval gates.** `--approve` pre-grants exist today; gated
+  actions should also support interactive TTY prompts and webhook-style
+  asynchronous approval, with the grant recorded in the trace either way.
+- **Signed traces.** The auditor detects tampering relative to the plan;
+  hash-chaining + signing each trace event would make witnesses
+  tamper-*evident* on their own, enabling third-party audit of runs you
+  did not execute.
+- **Learned confidence calibration.** Replace the shrinkage placeholder
+  with a calibration map learned from scored historical runs (held-out
+  scoring, ensembling, verifier models), per backend and per domain.
+- **Richer verification predicates.** Grow the machine-checkable vocabulary
+  (`consistent_with(source)`, numeric bounds on outputs) and add an
+  LLM-judge runner for judged rules — reported in a separate trust tier
+  from machine checks, never merged with them.
 - **Memory/context compiler.** Lower `context:` policy into concrete
   behavior: retrieval priorities for `prefer`, eviction immunity for
   `preserve`, hard budget enforcement for `max_tokens`.
-- **Confidence calibration.** Raw model self-reported confidence is known to
-  be miscalibrated. A calibration layer (held-out scoring, ensembling,
-  verifier models) should map reported confidence to calibrated confidence
-  before uncertainty rules fire.
-- **Static analysis for unsafe actions.** Flag plans where a
-  destructive-looking action is allowed without any verification rule
-  touching it, where escalation thresholds make `ask_human` unreachable, or
-  where evidence requirements cannot support the declared outputs.
-- **Graph execution.** Goals as nodes in a DAG with typed hand-offs: the
-  verified output of one goal becomes evidence for the next, with trace
-  continuity across the graph.
+- **DAG execution.** Pipelines are linear today with statically checked
+  evidence chains; generalize to DAGs with fan-out/fan-in and the same
+  static guarantees.
 - **Python integration.** An embedding API (`intentflow.load(...).run(...)`)
-  plus the inverse: registering Python functions as governed actions.
+  plus the inverse: registering Python functions as governed actions in the
+  tool registry.
 - **Compiler optimizations.** Because cost, latency, and risk are visible in
   the IR, they are optimizable: token-budget-aware evidence ordering, phase
   fusion when no gate separates them, early-exit when confidence already

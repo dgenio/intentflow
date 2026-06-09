@@ -17,6 +17,7 @@ from intentflow.iflow_ast import (
     EvidenceRequirement,
     Goal,
     OutputSpec,
+    Pipeline,
     Program,
     Section,
     Statement,
@@ -25,28 +26,40 @@ from intentflow.iflow_ast import (
 )
 from intentflow.parser import ParseError, parse_file, parse_source
 from intentflow.compiler import CompileError, compile_goal, compile_program, validate_program
-from intentflow.runtime import SimulationRuntime
+from intentflow.auditor import audit_document, audit_result
+from intentflow.backends import AnthropicCognition, SimulatedCognition, make_backend
+from intentflow.linter import lint_program
+from intentflow.runtime import GoalRuntime, SimulationRuntime, run_pipeline
 
-__version__ = "0.1.0"
+__version__ = "0.2.0"
 
 __all__ = [
     "ActionPolicy",
+    "AnthropicCognition",
     "CompileError",
     "ContextPolicy",
     "EvidenceRequirement",
     "Goal",
+    "GoalRuntime",
     "OutputSpec",
     "ParseError",
+    "Pipeline",
     "Program",
     "Section",
+    "SimulatedCognition",
     "SimulationRuntime",
     "Statement",
     "UncertaintyRule",
     "VerificationRule",
+    "audit_document",
+    "audit_result",
     "compile_goal",
     "compile_program",
+    "lint_program",
+    "make_backend",
     "parse_file",
     "parse_source",
+    "run_pipeline",
     "validate_program",
     "__version__",
 ]

@@ -46,8 +46,16 @@ def test_evidence_is_collected_for_required_sources(diagnose_result: dict) -> No
     assert all(e["id"].startswith("E") for e in diagnose_result["evidence"])
 
 
+def test_confidence_is_calibrated_before_rules_fire(diagnose_result: dict) -> None:
+    top = diagnose_result["hypotheses"][0]
+    assert top["raw_confidence"] == 0.68
+    # shrinkage toward 0.5 with factor 0.8 (then boosted by the
+    # discriminating test, which the next tests cover)
+    assert top["confidence"] != top["raw_confidence"]
+
+
 def test_low_confidence_triggers_human_escalation(diagnose_result: dict) -> None:
-    # Mock top confidence starts at 0.68, below the declared 0.7 threshold.
+    # Mock raw 0.68 calibrates to 0.644, below the declared 0.7 threshold.
     assert diagnose_result["escalations"], "expected ask_human escalation"
     assert "threshold" in diagnose_result["escalations"][0]["question"]
     events = [e["event"] for e in diagnose_result["trace"]]
@@ -100,6 +108,33 @@ def test_symbolic_rule_without_simulator_is_recorded() -> None:
         e for e in result["trace"] if e["event"] == "rule_not_simulated"
     ]
     assert any("conflicting_sources" in e["detail"]["condition"] for e in recorded)
+
+
+def test_judged_verification_is_skipped_not_passed() -> None:
+    result = _run_example("research_question")
+    by_rule = {c["rule"]: c for c in result["verification"]["checks"]}
+    judged = by_rule["conflicting sources must be reported not hidden"]
+    assert judged["mode"] == "judged"
+    assert judged["status"] == "skipped"
+
+
+def test_distrusted_sources_trace_order_is_deterministic() -> None:
+    source = (
+        "goal G {\n"
+        "  objective:\n    x\n"
+        "  evidence:\n    require logs\n    distrust b_source\n    distrust a_source\n"
+        "  output:\n    answer\n"
+        "}\n"
+    )
+    program = parse_source(source)
+    plan = compile_goal(program.goals[0]).to_dict()
+    result = SimulationRuntime(plan, printer=None).run()
+    noted = [
+        e["detail"]["source"]
+        for e in result["trace"]
+        if e["event"] == "source_distrusted"
+    ]
+    assert noted == ["b_source", "a_source"]  # declaration order, not set order
 
 
 def test_runtime_is_deterministic() -> None:

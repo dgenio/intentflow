@@ -69,16 +69,44 @@ class Goal:
 
 
 @dataclass
+class StageRef:
+    """A reference to a goal executed as one stage of a pipeline."""
+
+    goal_name: str
+    line: int
+
+
+@dataclass
+class Pipeline:
+    """A top-level ``pipeline Name { stage GoalA ... }`` block.
+
+    Stages run in order; the structured outputs of earlier stages become
+    addressable evidence (``GoalName.field``) for later stages.
+    """
+
+    name: str
+    line: int
+    stages: list[StageRef] = field(default_factory=list)
+
+
+@dataclass
 class Program:
-    """A parsed ``.iflow`` file: one or more goals."""
+    """A parsed ``.iflow`` file: goals and optional pipelines."""
 
     goals: list[Goal] = field(default_factory=list)
+    pipelines: list[Pipeline] = field(default_factory=list)
     source_name: str = "<string>"
 
     def goal(self, name: str) -> Goal | None:
         for g in self.goals:
             if g.name == name:
                 return g
+        return None
+
+    def pipeline(self, name: str) -> Pipeline | None:
+        for p in self.pipelines:
+            if p.name == name:
+                return p
         return None
 
     def to_dict(self) -> dict[str, Any]:

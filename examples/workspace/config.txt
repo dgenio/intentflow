@@ -1,0 +1,4 @@
+job: nightly-etl
+memory_limit: 2048Mi        # unchanged for 14 months
+batch_size: unbounded       # relies on upstream row counts
+config_revision: c41f2a

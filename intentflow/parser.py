@@ -3,6 +3,7 @@
 The grammar is deliberately simple and line-based:
 
 * ``goal Name {`` opens a goal; ``}`` on its own line closes it.
+* ``pipeline Name {`` opens a pipeline of ``stage GoalName`` lines.
 * ``section:`` (e.g. ``evidence:``) opens a section inside a goal.
 * Every other non-empty line inside a section is a statement.
 * ``#`` starts a comment that runs to end of line.
@@ -15,9 +16,19 @@ from __future__ import annotations
 import re
 from pathlib import Path
 
-from intentflow.iflow_ast import Goal, Program, Section, Statement, SECTION_NAMES
+from intentflow.iflow_ast import (
+    Goal,
+    Pipeline,
+    Program,
+    Section,
+    StageRef,
+    Statement,
+    SECTION_NAMES,
+)
 
 _GOAL_RE = re.compile(r"^goal\s+([A-Za-z_][A-Za-z0-9_]*)\s*\{$")
+_PIPELINE_RE = re.compile(r"^pipeline\s+([A-Za-z_][A-Za-z0-9_]*)\s*\{$")
+_STAGE_RE = re.compile(r"^stage\s+([A-Za-z_][A-Za-z0-9_]*)$")
 _SECTION_RE = re.compile(r"^([a-z_]+)\s*:$")
 
 
@@ -44,6 +55,7 @@ def parse_source(text: str, source_name: str = "<string>") -> Program:
     """Parse IntentFlow source text into a :class:`Program`."""
     program = Program(source_name=source_name)
     current_goal: Goal | None = None
+    current_pipeline: Pipeline | None = None
     current_section: Section | None = None
 
     for lineno, raw in enumerate(text.splitlines(), start=1):
@@ -51,25 +63,62 @@ def parse_source(text: str, source_name: str = "<string>") -> Program:
         if not line:
             continue
 
-        if current_goal is None:
+        if current_goal is None and current_pipeline is None:
             match = _GOAL_RE.match(line)
-            if not match:
-                if line.startswith("goal"):
-                    raise ParseError(
-                        "malformed goal declaration; expected 'goal Name {'",
-                        lineno,
-                        source_name,
-                    )
+            if match:
+                name = match.group(1)
+                if program.goal(name) is not None:
+                    raise ParseError(f"duplicate goal {name!r}", lineno, source_name)
+                current_goal = Goal(name=name, line=lineno)
+                current_section = None
+                continue
+            match = _PIPELINE_RE.match(line)
+            if match:
+                name = match.group(1)
+                if program.pipeline(name) is not None:
+                    raise ParseError(f"duplicate pipeline {name!r}", lineno, source_name)
+                current_pipeline = Pipeline(name=name, line=lineno)
+                continue
+            if line.startswith("goal"):
                 raise ParseError(
-                    f"unexpected top-level content {line!r}; expected 'goal Name {{'",
+                    "malformed goal declaration; expected 'goal Name {'",
                     lineno,
                     source_name,
                 )
-            name = match.group(1)
-            if program.goal(name) is not None:
-                raise ParseError(f"duplicate goal {name!r}", lineno, source_name)
-            current_goal = Goal(name=name, line=lineno)
-            current_section = None
+            if line.startswith("pipeline"):
+                raise ParseError(
+                    "malformed pipeline declaration; expected 'pipeline Name {'",
+                    lineno,
+                    source_name,
+                )
+            raise ParseError(
+                f"unexpected top-level content {line!r}; expected "
+                "'goal Name {' or 'pipeline Name {'",
+                lineno,
+                source_name,
+            )
+
+        if current_pipeline is not None:
+            if line == "}":
+                if not current_pipeline.stages:
+                    raise ParseError(
+                        f"pipeline {current_pipeline.name!r} has no stages",
+                        current_pipeline.line,
+                        source_name,
+                    )
+                program.pipelines.append(current_pipeline)
+                current_pipeline = None
+                continue
+            match = _STAGE_RE.match(line)
+            if not match:
+                raise ParseError(
+                    f"invalid pipeline statement {line!r}; expected 'stage GoalName'",
+                    lineno,
+                    source_name,
+                )
+            current_pipeline.stages.append(
+                StageRef(goal_name=match.group(1), line=lineno)
+            )
             continue
 
         if line == "}":
@@ -111,6 +160,12 @@ def parse_source(text: str, source_name: str = "<string>") -> Program:
         raise ParseError(
             f"unclosed goal {current_goal.name!r}; missing '}}'",
             current_goal.line,
+            source_name,
+        )
+    if current_pipeline is not None:
+        raise ParseError(
+            f"unclosed pipeline {current_pipeline.name!r}; missing '}}'",
+            current_pipeline.line,
             source_name,
         )
     if not program.goals:

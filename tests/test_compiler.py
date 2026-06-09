@@ -24,6 +24,7 @@ PLAN_KEYS = {
     "model_directives",
     "verification",
     "uncertainty_policy",
+    "calibration",
     "outputs",
     "trace",
     "prompt_plan",
@@ -91,9 +92,23 @@ def test_prompt_plan_is_staged(diagnose_plan: dict) -> None:
     assert "deploy_change" in frame  # approval gating is visible in the prompt
 
 
-def test_verification_rules_get_ids(diagnose_plan: dict) -> None:
+def test_verification_rules_get_ids_and_typed_checks(diagnose_plan: dict) -> None:
     ids = [rule["id"] for rule in diagnose_plan["verification"]]
     assert ids == ["V1", "V2"]
+    checks = [rule["check"] for rule in diagnose_plan["verification"]]
+    assert checks[0] == {"kind": "cites_evidence", "mode": "machine"}
+    assert checks[1] == {"kind": "requires_phrase", "arg": "rollback", "mode": "machine"}
+
+
+def test_judged_verification_rules_are_marked() -> None:
+    program = parse_file("examples/research_question.iflow")
+    plan = compile_goal(program.goals[0], program.source_name).to_dict()
+    modes = {rule["rule"]: rule["check"]["mode"] for rule in plan["verification"]}
+    assert modes["conflicting sources must be reported not hidden"] == "judged"
+
+
+def test_calibration_policy_is_part_of_the_plan(diagnose_plan: dict) -> None:
+    assert diagnose_plan["calibration"]["method"] == "shrinkage"
 
 
 def test_compile_program_wraps_all_goals() -> None:

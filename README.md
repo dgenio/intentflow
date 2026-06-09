@@ -104,65 +104,130 @@ goal DiagnoseProductionIssue {
 }
 ```
 
-## Current MVP features
+## The deep angle: programs as contracts, traces as witnesses
+
+The honest objection to any "agent DSL" is: *couldn't this just be a Python
+dataclass?* A dataclass can hold the same fields. What it cannot do is give
+the fields **semantics that survive the model boundary**. IntentFlow's
+answer has three parts:
+
+1. **The program is a contract.** `require_approval deploy_change` is not
+   data the runtime may consult; it is a policy the
+   [`ActionGate`](intentflow/tools.py) enforces *outside the model*. A tool
+   the goal does not allow cannot run — the model cannot talk its way past
+   the gate, because the gate never reads model output.
+2. **The trace is a witness.** Every run emits an append-only trace in a
+   defined format: every tool invocation, approval, rule evaluation, check
+   result, and escalation, in canonical phase order.
+3. **Conformance is independently verifiable.** `intentflow audit` replays
+   a result against the recompiled plan and proves — without trusting the
+   runtime, the backend, or the model — that the run stayed inside its
+   envelope: no denied action ran, every gated action has a prior approval
+   grant, every citation points at collected evidence, no verification
+   failure was dropped from the result, the output contract was met.
+
+This is *proof-carrying agent behavior*: the same move that audit logs +
+seccomp profiles made for processes, applied to cognition. A dataclass can
+describe an envelope; it cannot make violations of the envelope detectable
+by a third party. That property has to live in a language + runtime + trace
+format that agree with each other — which is exactly what IntentFlow is.
+
+## Current features
 
 - **Parser** for `.iflow` files: line-based grammar, `#` comments, parse
-  errors with file and line numbers.
-- **Typed AST + cognitive IR**: `Goal`, `EvidenceRequirement`,
+  errors with file and line numbers; `goal` blocks and `pipeline` blocks.
+- **Typed AST + cognitive IR**: `Goal`, `Pipeline`, `EvidenceRequirement`,
   `ActionPolicy`, `VerificationRule`, `UncertaintyRule`, `ContextPolicy`,
   `OutputSpec`.
-- **Compiler** to a JSON execution plan: normalized objective, required
-  evidence, allowed / approval-gated / denied actions, verification
-  checklist, uncertainty policy, output contract, trace configuration, and
-  a *staged* prompt plan (frame → evidence → model → verify → output).
-- **Semantic validation**: missing objectives, conflicting action policies,
-  malformed uncertainty rules, out-of-range confidence thresholds; warnings
-  for goals with no evidence or verification.
-- **Simulation runtime** (no LLM API required): executes the plan phase by
-  phase with deterministic mock cognition — collects evidence, proposes
-  hypotheses with confidence, applies uncertainty rules (including human
-  escalation and discriminating tests), runs the verification checklist,
-  and emits a structured result plus a complete audit trace.
-- **CLI**: `parse`, `validate`, `compile`, `run --simulate`.
+- **Compiler** to a JSON execution plan: normalized objective, evidence by
+  stance, allowed / approval-gated / denied actions, **typed verification
+  checks** (machine-checkable vs LLM-judged — the distinction is part of
+  the plan), uncertainty policy, **calibration policy**, output contract,
+  and a staged prompt plan (frame → evidence → model → verify → output).
+- **Goal composition**: pipelines whose evidence chains
+  (`require DiagnoseIncident.root_cause`) are **statically checked** — a
+  stage cannot require an output no earlier stage produces.
+- **Static analysis** (`intentflow lint`): destructive actions allowed
+  without safeguards, unreachable or duplicate uncertainty thresholds,
+  conditions and rules that cannot be enforced.
+- **Governed runtime**: cognition is a pluggable backend
+  (deterministic simulation, or a real Claude model via
+  `--backend anthropic`), but governance is not pluggable — evidence
+  collection runs through the action gate, raw confidence is calibrated
+  before uncertainty rules fire, judged verification rules are recorded as
+  *skipped*, never silently passed, and `ask_human` / approval gates are
+  control flow.
+- **Real governed tools**: with `--workspace`, evidence sources are
+  collected by real read-only tools through the gate; a goal that requires
+  `logs` but does not allow `read_logs` gets a traced `action_blocked`, not
+  the file contents.
+- **Trace auditing** (`intentflow audit`): independent conformance checking
+  of any run result against the program, including tamper detection
+  (covered by tests: hidden verification failures, unapproved gated
+  actions, dangling citations, broken trace sequences are all caught).
+- **CLI**: `parse`, `validate`, `lint`, `compile`, `run`, `audit`.
 
 ## Install & use
 
 ```bash
-pip install -e ".[dev]"
+pip install -e ".[dev]"          # add ".[dev,llm]" for the Anthropic backend
 
 intentflow parse    examples/diagnose.iflow      # print the AST as JSON
 intentflow validate examples/diagnose.iflow      # semantic checks
+intentflow lint     examples/diagnose.iflow      # static policy analysis
 intentflow compile  examples/diagnose.iflow      # print the execution plan
-intentflow run      examples/diagnose.iflow --simulate
+
+# simulated cognition, real governed evidence collection, saved witness:
+intentflow run examples/diagnose.iflow --simulate \
+    --workspace examples/workspace --trace-out result.json
+
+# independently verify the run stayed inside the program's envelope:
+intentflow audit examples/diagnose.iflow result.json
+
+# composed goals with a statically checked evidence chain:
+intentflow run examples/incident_pipeline.iflow --simulate \
+    --pipeline IncidentResponse
+
+# real model cognition behind the same governance (needs ANTHROPIC_API_KEY):
+intentflow run examples/diagnose.iflow --backend anthropic \
+    --workspace examples/workspace
 
 python -m pytest                                  # run the test suite
 ```
 
-Three examples ship with the repo: `examples/diagnose.iflow`,
-`examples/code_review.iflow`, and `examples/research_question.iflow`. Each
-demonstrates evidence requirements, uncertainty handling, verification, and
-action governance — not prompt templating.
+Four examples ship with the repo: `examples/diagnose.iflow`,
+`examples/code_review.iflow`, `examples/research_question.iflow`, and
+`examples/incident_pipeline.iflow` (two goals composed into a pipeline),
+plus `examples/workspace/` with real evidence files for governed
+collection.
 
 ## Honest status
 
-This is an **experimental prototype**. The runtime mocks all cognition
-deterministically so the *control structure* of the language can be
-exercised and tested end to end. The grammar is intentionally minimal. The
-value today is the shape of the abstraction: a compiled, inspectable,
-verifiable plan for an agent, with uncertainty and escalation as language
-semantics.
+This is an **experimental prototype**. The default backend mocks cognition
+deterministically so the *control structure* of the language is testable
+end to end; the Anthropic backend is real but young. Calibration is a
+placeholder shrinkage map, not a learned one. The grammar is intentionally
+minimal. The value today is the shape of the abstraction: a compiled,
+inspectable plan, governance enforced outside the model, and runs whose
+conformance can be verified by a third party.
 
 ## Roadmap
 
-1. **Real LLM backend** behind the same phase contract and trace format.
-2. **Tool adapters** so `allow read_logs` binds to real, sandboxed tools.
-3. **Memory/context compiler** that turns `context:` policy into concrete
+1. **Approval gates as blocking interactions** (interactive TTY / webhook),
+   not just pre-granted `--approve` lists.
+2. **Learned confidence calibration** from scored historical runs, replacing
+   the shrinkage placeholder.
+3. **Signed traces** so witnesses are tamper-*evident*, not just
+   tamper-*detectable* against the plan.
+4. **Memory/context compiler** that turns `context:` policy into concrete
    retrieval and eviction behavior.
-4. **Confidence calibration** instead of trusting raw model self-reports.
-5. **Static analysis** for unsafe action combinations and unreachable
-   verification rules.
-6. **Graph execution**: goals composed into DAGs with typed hand-offs.
-7. **Python interop**: embed goals in Python programs and vice versa.
+5. **Typed predicate vocabulary** for `verify:` beyond
+   `cites_evidence`/`requires_phrase`, plus an LLM-judge runner for judged
+   rules (still reported separately from machine checks).
+6. **DAG pipelines** with fan-out/fan-in, building on the linear pipelines
+   and static evidence-chain checking that exist today.
+7. **Python interop**: embed goals in Python programs and register Python
+   functions as governed actions.
 8. **Compiler optimizations** for token cost, latency, and risk.
 
 See [`docs/architecture.md`](docs/architecture.md) for the conceptual stack
@@ -174,12 +239,16 @@ and design notes.
 intentflow/
   __init__.py     public API
   iflow_ast.py    syntactic AST + cognitive IR nodes
-  parser.py       .iflow -> AST
-  compiler.py     AST -> validated execution plan (JSON)
-  runtime.py      simulation runtime with audit trace
-  cli.py          intentflow parse|validate|compile|run
-examples/         three demonstration programs
-tests/            parser, compiler, runtime, CLI tests
+  parser.py       .iflow -> AST (goals + pipelines)
+  compiler.py     AST -> validated execution plan (JSON), pipeline checking
+  linter.py       static analysis of policies
+  backends.py     pluggable cognition (simulated / Anthropic)
+  tools.py        governed tools + the ActionGate enforcement point
+  runtime.py      phase-machine runtime with calibration and audit trace
+  auditor.py      trace conformance checking (the contract/witness story)
+  cli.py          intentflow parse|validate|lint|compile|run|audit
+examples/         four demonstration programs + a real evidence workspace
+tests/            parser, compiler, runtime, tools, pipeline, lint, audit, CLI
 docs/             architecture notes
 ```
 

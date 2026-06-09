@@ -1,0 +1,3 @@
+a91be03 2026-06-08 upstream: add customer_events columns to export (schema change)
+77fd210 2026-06-05 etl: bump pandas to 2.3
+c41f2a9 2026-05-21 etl: config revision bump, no functional change

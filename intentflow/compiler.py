@@ -25,7 +25,7 @@ from intentflow.iflow_ast import (
     VerificationRule,
 )
 
-PLAN_VERSION = "0.1.0"
+PLAN_VERSION = "0.2.0"
 
 _THRESHOLD_RE = re.compile(
     r"^if\s+([a-z_]+)\s*(<=|>=|<|>|==)\s*([0-9]*\.?[0-9]+)\s+(\S+)$"
@@ -106,6 +106,22 @@ def extract_verification(goal: Goal) -> list[VerificationRule]:
         VerificationRule(rule_id=f"V{i}", description=stmt.text, line=stmt.line)
         for i, stmt in enumerate(goal.statements("verify"), start=1)
     ]
+
+
+def classify_verification(description: str) -> dict[str, str]:
+    """Map a verification rule to a typed, executable check.
+
+    ``machine`` checks are evaluated by the runtime against structured state;
+    ``judged`` checks need an LLM judge and are recorded, never silently
+    assumed to pass. The distinction is part of the plan because the two have
+    very different trust properties.
+    """
+    text = description.lower()
+    if "cite" in text:
+        return {"kind": "cites_evidence", "mode": "machine"}
+    if "rollback" in text:
+        return {"kind": "requires_phrase", "arg": "rollback", "mode": "machine"}
+    return {"kind": "judged", "mode": "judged"}
 
 
 def extract_uncertainty(goal: Goal, source_name: str = "<string>") -> list[UncertaintyRule]:
@@ -290,6 +306,7 @@ class ExecutionPlan:
     model_directives: list[str]
     verification: list[dict[str, Any]]
     uncertainty_policy: list[dict[str, Any]]
+    calibration: dict[str, Any]
     outputs: list[str]
     trace: dict[str, Any]
     prompt_plan: list[dict[str, str]]
@@ -408,9 +425,18 @@ def compile_goal(goal: Goal, source_name: str = "<string>") -> ExecutionPlan:
         },
         model_directives=model_directives,
         verification=[
-            {"id": r.rule_id, "rule": r.description, "line": r.line}
+            {
+                "id": r.rule_id,
+                "rule": r.description,
+                "line": r.line,
+                "check": classify_verification(r.description),
+            }
             for r in verification
         ],
+        # Raw model self-reported confidence is miscalibrated; uncertainty
+        # rules fire on calibrated values. Shrinkage toward 0.5 is a stand-in
+        # until a learned calibration map exists.
+        calibration={"method": "shrinkage", "midpoint": 0.5, "factor": 0.8},
         uncertainty_policy=[
             {
                 "kind": r.kind,
@@ -431,10 +457,52 @@ def compile_goal(goal: Goal, source_name: str = "<string>") -> ExecutionPlan:
     )
 
 
+def _check_pipeline(pipeline, program: Program, source_name: str) -> None:
+    """Statically verify a pipeline's evidence chain: every dotted evidence
+    source ``GoalName.field`` must be produced by an *earlier* stage's
+    declared outputs."""
+    produced: dict[str, set[str]] = {}
+    for stage in pipeline.stages:
+        goal = program.goal(stage.goal_name)
+        if goal is None:
+            raise CompileError(
+                f"pipeline {pipeline.name!r} references unknown goal "
+                f"{stage.goal_name!r}",
+                stage.line,
+                source_name,
+            )
+        for req in extract_evidence(goal, source_name):
+            if req.stance != "require" or "." not in req.source:
+                continue
+            origin, _, field_name = req.source.partition(".")
+            if origin not in produced and program.goal(origin) is not None:
+                raise CompileError(
+                    f"stage {stage.goal_name!r} requires {req.source!r} but goal "
+                    f"{origin!r} does not run before it in pipeline "
+                    f"{pipeline.name!r}",
+                    req.line,
+                    source_name,
+                )
+            if origin in produced and field_name not in produced[origin]:
+                raise CompileError(
+                    f"stage {stage.goal_name!r} requires {req.source!r} but goal "
+                    f"{origin!r} does not declare output {field_name!r}",
+                    req.line,
+                    source_name,
+                )
+        produced[stage.goal_name] = set(extract_output(goal).fields)
+
+
 def compile_program(program: Program) -> dict[str, Any]:
-    """Compile every goal in a program into a JSON-serializable document."""
+    """Compile every goal and pipeline in a program into a JSON document."""
+    for pipeline in program.pipelines:
+        _check_pipeline(pipeline, program, program.source_name)
     return {
         "intentflow_version": PLAN_VERSION,
         "source": program.source_name,
         "plans": [compile_goal(g, program.source_name).to_dict() for g in program.goals],
+        "pipelines": [
+            {"name": p.name, "stages": [s.goal_name for s in p.stages]}
+            for p in program.pipelines
+        ],
     }

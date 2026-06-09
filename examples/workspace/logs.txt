@@ -1,0 +1,3 @@
+2026-06-09T03:12:44Z job=nightly-etl level=ERROR msg="OOMKilled: container exceeded memory limit (2048Mi)"
+2026-06-09T03:12:43Z job=nightly-etl level=WARN  msg="batch size grew to 4.1M rows after upstream schema change"
+2026-06-09T03:11:02Z job=nightly-etl level=INFO  msg="started with config revision c41f2a"
