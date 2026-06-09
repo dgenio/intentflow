@@ -136,6 +136,37 @@ def test_run_backend_simulate_explicit(capsys: pytest.CaptureFixture[str]) -> No
     assert "backend: simulate" in capsys.readouterr().out
 
 
+def test_run_with_judge_flag(capsys: pytest.CaptureFixture[str]) -> None:
+    code = main(
+        ["run", "examples/triage_issue.iflow", "--simulate",
+         "--workspace", "examples/workspace", "--judge", "simulate"]
+    )
+    assert code == 0
+    assert "judge: simulate-judge" in capsys.readouterr().out
+
+
+def test_run_sign_trace_requires_key(monkeypatch, capsys: pytest.CaptureFixture[str]) -> None:
+    monkeypatch.delenv("IFLOW_TRACE_KEY", raising=False)
+    assert main(["run", "examples/diagnose.iflow", "--simulate", "--sign-trace"]) == 1
+    assert "IFLOW_TRACE_KEY" in capsys.readouterr().err
+
+
+def test_run_replay_requires_cassette(capsys: pytest.CaptureFixture[str]) -> None:
+    assert main(["run", "examples/diagnose.iflow", "--backend", "replay"]) == 1
+    assert "cassette" in capsys.readouterr().err
+
+
+def test_run_sign_and_audit_roundtrip(tmp_path, monkeypatch) -> None:
+    monkeypatch.setenv("IFLOW_TRACE_KEY", "clitestkey")
+    trace_dir = tmp_path / "traces"
+    assert main(
+        ["run", "examples/diagnose.iflow", "--simulate", "--sign-trace",
+         "--trace-dir", str(trace_dir)]
+    ) == 0
+    artifact = next(trace_dir.glob("*.json"))
+    assert main(["audit", "examples/diagnose.iflow", str(artifact)]) == 0
+
+
 def test_triage_example_runs_and_audits(tmp_path) -> None:
     # End-to-end: compile, run in simulate, then independently audit.
     from intentflow.auditor import audit_document

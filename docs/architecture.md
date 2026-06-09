@@ -119,41 +119,69 @@ The program is a **contract**; the trace is a **witness**; the auditor is
 an **independent verifier**. ``intentflow audit`` recompiles the source and
 replays a result against it, checking: no denied action ran (A3), gated
 actions have prior approval grants (A2), only allowed actions ran (A1), the
-trace is append-only and in canonical phase order (T1/T2), citations point
-at collected evidence (E1), every uncertainty rule was evaluated or
-recorded (U1), every verification rule was checked and no failure was
-hidden from the result (V1), and the output contract was met exactly (O1).
+trace is append-only and in canonical phase order (T1/T2), the trace hash
+chain is intact and any HMAC signature verifies (T3), citations point at
+collected evidence (E1), every uncertainty rule was evaluated or recorded
+(U1), every verification rule was checked and no failure was hidden from the
+result (V1), and the output contract was met exactly (O1).
 
 Because the auditor needs only the source and the result JSON, conformance
 can be verified without trusting the runtime, the backend, or the model —
 proof-carrying agent behavior, in the spirit of audit logs + seccomp
 profiles for processes.
 
+### Trust tiers, gates, and tamper-evidence
+
+Three mechanisms keep the runtime honest beyond the plan:
+
+- **Approval channels** (`tools.py`). An approval-gated action consults an
+  ``Approver`` — pre-grant, blocking TTY prompt, or synchronous webhook — and
+  blocks until it decides. The decision and its channel are traced; no
+  decision means denied (fail closed).
+- **The judge tier** (`judges.py`). `judged` verification rules can be run by
+  an LLM ``Judge``, but their verdicts live in a **separate tier**: each
+  carries the judge's name and a rationale, and the verification result keeps
+  ``machine`` and ``judged`` tallies apart so a proof is never confused with a
+  model's opinion. Without a judge, judged rules are recorded as *skipped*.
+- **Hash-chained traces** (`runtime.Trace`). Each event stores
+  ``sha256(prev_hash || canonical(event))``; the auditor recomputes the chain
+  from genesis, so an altered, deleted, or reordered event is caught
+  *standalone* — no plan required. ``--sign-trace`` adds an HMAC seal over the
+  root for key-holder provenance.
+
+### Embedding (`api.py`)
+
+``intentflow.load(...)`` exposes the whole stack to Python:
+``validate`` / ``compile`` / ``inspect`` / ``run`` / ``run_pipeline``, plus
+``register_tool`` to expose a Python function as a governed action. Registered
+tools still run *through the action gate*, so Python interop never bypasses
+governance. Recorded **cassettes** (`backends.py`) capture a real model's raw
+replies once and replay them deterministically, giving the real
+parsing/governance path CI coverage without credentials.
+
 ## Future directions
 
-- **Blocking approval gates.** `--approve` pre-grants exist today; gated
-  actions should also support interactive TTY prompts and webhook-style
-  asynchronous approval, with the grant recorded in the trace either way.
-- **Signed traces.** The auditor detects tampering relative to the plan;
-  hash-chaining + signing each trace event would make witnesses
-  tamper-*evident* on their own, enabling third-party audit of runs you
-  did not execute.
+Already shipped: blocking approval gates (TTY/webhook), the LLM-judge runner
+with a separate trust tier, hash-chained + HMAC-signed traces, the Python
+embedding API with governed Python tools, and recorded (cassette) backends.
+Still ahead:
+
 - **Learned confidence calibration.** Replace the shrinkage placeholder
   with a calibration map learned from scored historical runs (held-out
   scoring, ensembling, verifier models), per backend and per domain.
 - **Richer verification predicates.** Grow the machine-checkable vocabulary
-  (`consistent_with(source)`, numeric bounds on outputs) and add an
-  LLM-judge runner for judged rules — reported in a separate trust tier
-  from machine checks, never merged with them.
+  beyond `cites_evidence` / `requires_phrase` / `threshold_check`
+  (`consistent_with(source)`, numeric bounds on outputs).
 - **Memory/context compiler.** Lower `context:` policy into concrete
   behavior: retrieval priorities for `prefer`, eviction immunity for
   `preserve`, hard budget enforcement for `max_tokens`.
 - **DAG execution.** Pipelines are linear today with statically checked
   evidence chains; generalize to DAGs with fan-out/fan-in and the same
   static guarantees.
-- **Python integration.** An embedding API (`intentflow.load(...).run(...)`)
-  plus the inverse: registering Python functions as governed actions in the
-  tool registry.
+- **Asynchronous approval.** Generalize the synchronous webhook approver to
+  issue-and-resume (callback/polling) approval.
+- **Public-key trace signatures.** Add Ed25519 signing alongside today's
+  HMAC, so witnesses are verifiable by parties who do not share the secret.
 - **Compiler optimizations.** Because cost, latency, and risk are visible in
   the IR, they are optimizable: token-budget-aware evidence ordering, phase
   fusion when no gate separates them, early-exit when confidence already

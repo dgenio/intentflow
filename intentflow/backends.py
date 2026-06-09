@@ -30,6 +30,7 @@ from __future__ import annotations
 import json
 import os
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Any, Protocol
 
 
@@ -211,18 +212,20 @@ class AnthropicCognition:
         self._model = model
         self._max_tokens = max_tokens
 
-    def propose(self, plan: dict[str, Any], evidence: list[dict[str, Any]]) -> Proposal:
-        system, user_message = assemble_messages(plan, evidence)
+    def complete(self, system: str, user: str) -> str:
         response = self._client.messages.create(
             model=self._model,
             max_tokens=self._max_tokens,
             system=system,
-            messages=[{"role": "user", "content": user_message}],
+            messages=[{"role": "user", "content": user}],
         )
-        text = "".join(
+        return "".join(
             block.text for block in response.content if block.type == "text"
         )
-        return parse_model_json(text, evidence)
+
+    def propose(self, plan: dict[str, Any], evidence: list[dict[str, Any]]) -> Proposal:
+        system, user_message = assemble_messages(plan, evidence)
+        return parse_model_json(self.complete(system, user_message), evidence)
 
 
 class OpenAICompatibleCognition:
@@ -264,19 +267,130 @@ class OpenAICompatibleCognition:
         self._model = model or os.environ.get("OPENAI_MODEL") or "gpt-4o-mini"
         self._max_tokens = max_tokens
 
-    def propose(self, plan: dict[str, Any], evidence: list[dict[str, Any]]) -> Proposal:
-        system, user_message = assemble_messages(plan, evidence)
+    def complete(self, system: str, user: str) -> str:
         response = self._client.chat.completions.create(
             model=self._model,
             max_tokens=self._max_tokens,
             response_format={"type": "json_object"},
             messages=[
                 {"role": "system", "content": system},
-                {"role": "user", "content": user_message},
+                {"role": "user", "content": user},
             ],
         )
-        text = response.choices[0].message.content or ""
-        return parse_model_json(text, evidence)
+        return response.choices[0].message.content or ""
+
+    def propose(self, plan: dict[str, Any], evidence: list[dict[str, Any]]) -> Proposal:
+        system, user_message = assemble_messages(plan, evidence)
+        return parse_model_json(self.complete(system, user_message), evidence)
+
+
+def provider_chat(name: str) -> "Any":
+    """Return a ``(system, user) -> text`` callable for a real provider,
+    reused by the LLM judge. Raises the provider's clear error if it is not
+    configured."""
+    backend = make_backend(name)
+    complete = getattr(backend, "complete", None)
+    if complete is None:
+        raise ValueError(f"backend {name!r} does not support chat completion")
+    return complete
+
+
+# ---------------------------------------------------------------------------
+# Cassettes: record real model replies once, replay them forever (no keys)
+# ---------------------------------------------------------------------------
+
+
+class CassetteMiss(RuntimeError):
+    """A replay run asked for an interaction the cassette never recorded."""
+
+
+class Cassette:
+    """A JSON file mapping a request fingerprint to a recorded raw reply.
+
+    Cassettes let the OpenAI/Anthropic *parsing and governance* path be tested
+    in CI with real recorded responses and no API key: record once against a
+    live (or fake) provider, replay deterministically thereafter.
+    """
+
+    def __init__(self, path: str | Path, entries: dict[str, str] | None = None) -> None:
+        self.path = Path(path)
+        self.entries: dict[str, str] = entries or {}
+
+    @classmethod
+    def load(cls, path: str | Path) -> "Cassette":
+        p = Path(path)
+        if p.is_file():
+            data = json.loads(p.read_text(encoding="utf-8"))
+            return cls(p, data.get("entries", {}))
+        return cls(p, {})
+
+    def save(self) -> None:
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        self.path.write_text(
+            json.dumps({"entries": self.entries}, indent=2, sort_keys=True),
+            encoding="utf-8",
+        )
+
+    @staticmethod
+    def key(system: str, user: str) -> str:
+        import hashlib
+
+        return hashlib.sha256(f"{system}\x00{user}".encode("utf-8")).hexdigest()
+
+    def get(self, system: str, user: str) -> str | None:
+        return self.entries.get(self.key(system, user))
+
+    def put(self, system: str, user: str, reply: str) -> None:
+        self.entries[self.key(system, user)] = reply
+
+
+class ReplayBackend:
+    """A cognition backend that answers from a cassette — never the network.
+
+    Used in tests/CI to exercise the real parsing and governance path against
+    recorded responses without any credentials.
+    """
+
+    name = "replay"
+
+    def __init__(self, cassette: Cassette) -> None:
+        self._cassette = cassette
+
+    def complete(self, system: str, user: str) -> str:
+        reply = self._cassette.get(system, user)
+        if reply is None:
+            raise CassetteMiss(
+                f"no recorded reply in cassette {self._cassette.path} for this "
+                "interaction; record it first with a real backend"
+            )
+        return reply
+
+    def propose(self, plan: dict[str, Any], evidence: list[dict[str, Any]]) -> Proposal:
+        system, user = assemble_messages(plan, evidence)
+        return parse_model_json(self.complete(system, user), evidence)
+
+
+class RecordingBackend:
+    """Wrap any backend with a ``complete`` method, persisting every raw reply
+    to a cassette (replaying recorded ones to stay deterministic)."""
+
+    def __init__(self, inner: Any, cassette: Cassette) -> None:
+        self._inner = inner
+        self._cassette = cassette
+        self.name = f"record:{getattr(inner, 'name', 'backend')}"
+
+    def complete(self, system: str, user: str) -> str:
+        cached = self._cassette.get(system, user)
+        if cached is not None:
+            return cached
+        reply = self._inner.complete(system, user)
+        self._cassette.put(system, user, reply)
+        self._cassette.save()
+        return reply
+
+    def propose(self, plan: dict[str, Any], evidence: list[dict[str, Any]]) -> Proposal:
+        system, user = assemble_messages(plan, evidence)
+        return parse_model_json(self.complete(system, user), evidence)
 
 
 #: Discoverability aliases matching the conceptual backend names.
@@ -291,15 +405,27 @@ BACKENDS: dict[str, type] = {
 }
 
 
-def make_backend(name: str) -> CognitionBackend:
+def make_backend(name: str, cassette: str | Path | None = None) -> CognitionBackend:
     """Build a backend by CLI name. Real backends raise a clear
     :class:`RuntimeError` if their optional dependency or credentials are
-    missing — never a cryptic import or attribute error."""
+    missing — never a cryptic import or attribute error.
+
+    ``replay`` answers from ``cassette`` (no credentials needed). For any real
+    backend, passing ``cassette`` wraps it in a :class:`RecordingBackend` so
+    its replies are captured for later replay.
+    """
+    if name == "replay":
+        if cassette is None:
+            raise ValueError("the 'replay' backend requires a cassette path")
+        return ReplayBackend(Cassette.load(cassette))
     try:
         factory = BACKENDS[name]
     except KeyError:
         raise ValueError(
             f"unknown backend {name!r}; expected one of: "
-            + ", ".join(sorted(BACKENDS))
+            + ", ".join(sorted(BACKENDS) + ["replay"])
         )
-    return factory()
+    backend = factory()
+    if cassette is not None and hasattr(backend, "complete"):
+        return RecordingBackend(backend, Cassette.load(cassette))
+    return backend

@@ -19,6 +19,7 @@ from __future__ import annotations
 import argparse
 import datetime as _dt
 import json
+import os
 import sys
 from pathlib import Path
 
@@ -32,9 +33,11 @@ from intentflow.compiler import (
     validate_program,
 )
 from intentflow.formatter import format_source
+from intentflow.judges import make_judge
 from intentflow.linter import lint_program
 from intentflow.parser import ParseError, parse_file
 from intentflow.runtime import GoalRuntime, run_pipeline
+from intentflow.tools import PreGrantedApprover, TTYApprover, WebhookApprover
 
 
 def _load(path: str):
@@ -164,17 +167,41 @@ def _print_run_summary(result: dict) -> None:
     print(f"  trace id:           {summary.get('trace_id')}")
 
 
+def _build_approver(args: argparse.Namespace):
+    """Pick the approval channel for gated actions (precedence: webhook >
+    interactive TTY > pre-granted --approve list)."""
+    if args.approve_webhook:
+        return WebhookApprover(args.approve_webhook)
+    if args.approve_interactive:
+        return TTYApprover()
+    if args.approve:
+        return PreGrantedApprover(set(args.approve))
+    return None
+
+
+def _sign_key(args: argparse.Namespace) -> bytes | None:
+    if not args.sign_trace:
+        return None
+    key = os.environ.get("IFLOW_TRACE_KEY")
+    if not key:
+        raise RuntimeError("--sign-trace requires the IFLOW_TRACE_KEY environment variable")
+    return key.encode("utf-8")
+
+
 def cmd_run(args: argparse.Namespace) -> int:
     # --simulate is an explicit alias for the default simulate backend.
     backend_name = "simulate" if args.simulate else args.backend
     program = _load(args.file)
     document = _compile_or_fail(program)
+    cassette = args.cassette if backend_name == "replay" else args.record_cassette
     try:
-        backend = make_backend(backend_name)
+        backend = make_backend(backend_name, cassette)
+        judge = make_judge(args.judge) if args.judge else None
+        sign_key = _sign_key(args)
     except (ValueError, RuntimeError) as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 1
-    approved = set(args.approve or [])
+    approver = _build_approver(args)
 
     if args.pipeline:
         names = [p["name"] for p in document["pipelines"]]
@@ -189,7 +216,9 @@ def cmd_run(args: argparse.Namespace) -> int:
             args.pipeline,
             backend=backend,
             workspace=args.workspace,
-            approved_actions=approved,
+            approver=approver,
+            judge=judge,
+            sign_key=sign_key,
         )
         results = [result]
     else:
@@ -199,7 +228,9 @@ def cmd_run(args: argparse.Namespace) -> int:
                 plan,
                 backend=backend,
                 workspace=args.workspace,
-                approved_actions=approved,
+                approver=approver,
+                judge=judge,
+                sign_key=sign_key,
             )
             results.append(runtime.run())
 
@@ -291,7 +322,10 @@ def cmd_audit(args: argparse.Namespace) -> int:
     # the same audit works on either a --trace-out file or a --trace-dir one.
     if "result" in result and "goal" not in result and "pipeline" not in result:
         result = result["result"]
-    report = audit_document(document, result)
+    # Verify any HMAC trace signature if the same key is available.
+    key = os.environ.get("IFLOW_TRACE_KEY")
+    sign_key = key.encode("utf-8") if key else None
+    report = audit_document(document, result, sign_key)
     print(json.dumps(report, indent=2))
     if report["conformant"]:
         print("AUDIT: CONFORMANT — the trace stayed inside the program's envelope")
@@ -338,8 +372,8 @@ def build_parser() -> argparse.ArgumentParser:
     p_run.add_argument(
         "--backend",
         default="simulate",
-        choices=sorted(BACKENDS),
-        help="cognition backend (default: simulate)",
+        choices=sorted(BACKENDS) + ["replay"],
+        help="cognition backend (default: simulate; 'replay' needs --cassette)",
     )
     p_run.add_argument(
         "--pipeline", help="run a named pipeline instead of standalone goals"
@@ -353,6 +387,34 @@ def build_parser() -> argparse.ArgumentParser:
         action="append",
         metavar="ACTION",
         help="pre-grant human approval for an approval-gated action (repeatable)",
+    )
+    p_run.add_argument(
+        "--approve-interactive",
+        action="store_true",
+        help="block and prompt on the terminal for each approval-gated action",
+    )
+    p_run.add_argument(
+        "--approve-webhook",
+        metavar="URL",
+        help="request approval for gated actions from a synchronous webhook",
+    )
+    p_run.add_argument(
+        "--judge",
+        choices=["simulate", "openai", "anthropic"],
+        help="run an LLM judge on 'judged' verification rules (separate tier)",
+    )
+    p_run.add_argument(
+        "--cassette",
+        help="replay recorded model responses from this file (with --backend replay)",
+    )
+    p_run.add_argument(
+        "--record-cassette",
+        help="record a real backend's model responses to this file for later replay",
+    )
+    p_run.add_argument(
+        "--sign-trace",
+        action="store_true",
+        help="HMAC-sign the trace chain using the IFLOW_TRACE_KEY env var",
     )
     p_run.add_argument(
         "--trace-dir",

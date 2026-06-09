@@ -10,6 +10,8 @@ that the agent stayed inside its envelope:
 * ``A3`` — no denied action was ever invoked;
 * ``T1`` — the trace is append-only (sequence strictly increasing from 1);
 * ``T2`` — phases ran in canonical order;
+* ``T3`` — the trace hash chain is intact (tamper-evident standalone) and,
+  if sealed/signed, the root and HMAC signature verify;
 * ``E1`` — every hypothesis citation points at collected evidence;
 * ``U1`` — every uncertainty rule in the plan was evaluated or recorded;
 * ``V1`` — every verification rule in the plan was checked, and no failed
@@ -23,16 +25,73 @@ runtime, the backend, or the model.
 
 from __future__ import annotations
 
+import hashlib
+import hmac
 from dataclasses import dataclass
 from typing import Any
 
-from intentflow.runtime import CANONICAL_PHASES
+from intentflow.runtime import CANONICAL_PHASES, GENESIS_HASH, link_hash
 
 
 @dataclass
 class Violation:
     code: str
     message: str
+
+
+def _check_trace_chain(
+    trace: list[dict[str, Any]],
+    chain: dict[str, Any] | None = None,
+    sign_key: bytes | None = None,
+) -> list[Violation]:
+    """Recompute the hash chain independently and verify any seal/signature.
+
+    This makes the trace tamper-*evident* on its own: an edited, deleted, or
+    reordered event breaks the chain regardless of the plan. A valid HMAC
+    signature additionally proves the trace was sealed by a key holder."""
+    violations: list[Violation] = []
+    prev = GENESIS_HASH
+    for event in trace:
+        if event.get("prev_hash") != prev:
+            violations.append(
+                Violation(
+                    "T3",
+                    f"trace hash chain broken at seq {event.get('seq')}: "
+                    "prev_hash does not match the previous event",
+                )
+            )
+            return violations
+        if event.get("hash") != link_hash(prev, event):
+            violations.append(
+                Violation(
+                    "T3",
+                    f"trace event seq {event.get('seq')} has been altered "
+                    "(recomputed hash does not match)",
+                )
+            )
+            return violations
+        prev = event["hash"]
+
+    if chain is not None:
+        if chain.get("root") != prev:
+            violations.append(
+                Violation("T3", "sealed trace root does not match the recomputed chain")
+            )
+        if chain.get("length") != len(trace):
+            violations.append(
+                Violation("T3", "sealed trace length does not match the trace")
+            )
+        signature = chain.get("signature")
+        if signature is not None:
+            if sign_key is None:
+                violations.append(
+                    Violation("T3", "trace is signed but no key was provided to verify it")
+                )
+            else:
+                expected = hmac.new(sign_key, prev.encode("utf-8"), hashlib.sha256).hexdigest()
+                if not hmac.compare_digest(expected, signature):
+                    violations.append(Violation("T3", "trace signature is invalid"))
+    return violations
 
 
 def _check_trace_integrity(trace: list[dict[str, Any]]) -> list[Violation]:
@@ -182,11 +241,14 @@ def _check_output_contract(plan: dict[str, Any], result: dict[str, Any]) -> list
     return []
 
 
-def audit_result(plan: dict[str, Any], result: dict[str, Any]) -> dict[str, Any]:
+def audit_result(
+    plan: dict[str, Any], result: dict[str, Any], sign_key: bytes | None = None
+) -> dict[str, Any]:
     """Audit one goal result against its compiled plan."""
     trace = result.get("trace", [])
     violations = (
         _check_trace_integrity(trace)
+        + _check_trace_chain(trace, result.get("trace_chain"), sign_key)
         + _check_action_governance(plan, trace)
         + _check_evidence_citations(result)
         + _check_uncertainty_coverage(plan, trace)
@@ -200,7 +262,9 @@ def audit_result(plan: dict[str, Any], result: dict[str, Any]) -> dict[str, Any]
     }
 
 
-def audit_document(document: dict[str, Any], result: dict[str, Any]) -> dict[str, Any]:
+def audit_document(
+    document: dict[str, Any], result: dict[str, Any], sign_key: bytes | None = None
+) -> dict[str, Any]:
     """Audit a result file (single goal or pipeline) against a compiled
     document. Returns an aggregate report."""
     plans = {plan["goal"]: plan for plan in document["plans"]}
@@ -222,7 +286,7 @@ def audit_document(document: dict[str, Any], result: dict[str, Any]) -> dict[str
                     }
                 )
                 continue
-            reports.append(audit_result(plan, stage))
+            reports.append(audit_result(plan, stage, sign_key))
         return {
             "pipeline": result["pipeline"],
             "conformant": all(r["conformant"] for r in reports),
@@ -240,4 +304,4 @@ def audit_document(document: dict[str, Any], result: dict[str, Any]) -> dict[str
                 }
             ],
         }
-    return audit_result(plan, result)
+    return audit_result(plan, result, sign_key)

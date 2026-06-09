@@ -35,39 +35,76 @@ from intentflow.compiler import (
 from intentflow.auditor import audit_document, audit_result
 from intentflow.backends import (
     AnthropicCognition,
+    Cassette,
     OpenAICompatibleBackend,
     OpenAICompatibleCognition,
+    RecordingBackend,
+    ReplayBackend,
     SimulatedCognition,
     SimulatorBackend,
     make_backend,
 )
+from intentflow.judges import Judge, JudgeVerdict, LLMJudge, SimulatedJudge, make_judge
+from intentflow.tools import (
+    ActionDenied,
+    ActionGate,
+    ApprovalDecision,
+    ApprovalError,
+    Approver,
+    CallbackApprover,
+    PreGrantedApprover,
+    Tool,
+    ToolRegistry,
+    TTYApprover,
+    WebhookApprover,
+)
 from intentflow.formatter import format_file, format_source
 from intentflow.linter import lint_program
 from intentflow.runtime import GoalRuntime, SimulationRuntime, run_pipeline
+from intentflow.api import IntentFlowProgram, load, load_source
 
-__version__ = "0.3.0"
+__version__ = "0.4.0"
 
 __all__ = [
+    "ActionDenied",
+    "ActionGate",
     "ActionPolicy",
     "AnthropicCognition",
+    "ApprovalDecision",
+    "ApprovalError",
+    "Approver",
+    "CallbackApprover",
+    "Cassette",
     "CompileError",
     "ContextPolicy",
     "EvidenceRequirement",
     "Goal",
     "GoalRuntime",
+    "IntentFlowProgram",
+    "Judge",
+    "JudgeVerdict",
+    "LLMJudge",
     "OpenAICompatibleBackend",
     "OpenAICompatibleCognition",
     "OutputSpec",
     "ParseError",
     "Pipeline",
+    "PreGrantedApprover",
     "Program",
+    "RecordingBackend",
+    "ReplayBackend",
     "Section",
     "SimulatedCognition",
+    "SimulatedJudge",
     "SimulationRuntime",
     "SimulatorBackend",
     "Statement",
+    "TTYApprover",
+    "Tool",
+    "ToolRegistry",
     "UncertaintyRule",
     "VerificationRule",
+    "WebhookApprover",
     "audit_document",
     "audit_result",
     "compile_goal",
@@ -76,7 +113,10 @@ __all__ = [
     "format_source",
     "inspect_program",
     "lint_program",
+    "load",
+    "load_source",
     "make_backend",
+    "make_judge",
     "parse_file",
     "parse_source",
     "run_pipeline",

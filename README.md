@@ -182,20 +182,43 @@ format that agree with each other — which is exactly what IntentFlow is.
   control flow. Each run also returns a flat **summary** (confidence,
   verification status, uncertainty status, actions requested/blocked,
   trace id).
+- **Blocking approval gates** (`tools.Approver`): approval-gated actions can
+  be pre-granted (`--approve`), prompted interactively on a TTY
+  (`--approve-interactive`), or resolved by a synchronous webhook
+  (`--approve-webhook URL`). Every decision — and the channel it came
+  through — is recorded in the trace; fail-closed by default.
+- **LLM-judge runner** (`--judge`): `judged` verification rules can be
+  evaluated by an LLM judge (`simulate`, `openai`, or `anthropic`) in a
+  **separate trust tier** — judged verdicts carry the judge's name and a
+  rationale and are reported apart from machine checks, never merged with
+  them. With no judge they stay *skipped*, never silently passed.
+- **Hash-chained, optionally signed traces**: every trace event is linked by
+  `sha256(prev || event)`, so an edited, deleted, or reordered event is
+  detectable *standalone* — the auditor recomputes the chain without the
+  program. `--sign-trace` (with `IFLOW_TRACE_KEY`) HMAC-seals the root so a
+  third party can prove a trace was produced by a key holder.
+- **Python embedding** (`intentflow.load(...).run(...)`): load, validate,
+  compile, inspect, and run goals/pipelines from Python, and register Python
+  functions as governed actions — they still execute through the action gate.
+- **Recorded backends** (cassettes): `--record-cassette` captures a real
+  model's replies; `--backend replay --cassette` replays them deterministically
+  so the real parsing/governance path is testable in CI without API keys.
 - **Real governed tools**: with `--workspace`, evidence sources are
   collected by real read-only tools through the gate; a goal that requires
   `logs` but does not allow `read_logs` gets a traced `action_blocked`, not
   the file contents.
 - **Trace auditing** (`intentflow audit`): independent conformance checking
   of any run result against the program, including tamper detection
-  (covered by tests: hidden verification failures, unapproved gated
-  actions, dangling citations, broken trace sequences are all caught).
+  (hidden verification failures, unapproved gated actions, dangling
+  citations, broken trace sequences, **broken hash chains**, and **invalid
+  signatures** are all caught — all covered by tests).
 - **Developer tooling** (`intentflow format`, `intentflow inspect`): an
   idempotent, comment-preserving formatter and an at-a-glance summary of a
   goal's sections, actions, evidence, output fields, and warnings.
 - **CLI**: `parse`, `validate` (`--json`), `lint`, `compile`, `inspect`,
-  `format` (`--check` / `--write`), `run` (`--trace-dir` writes an auditable
-  witness), `audit`.
+  `format` (`--check` / `--write`), `run` (`--backend simulate|anthropic|openai|replay`,
+  `--judge`, `--approve` / `--approve-interactive` / `--approve-webhook`,
+  `--sign-trace`, `--cassette` / `--record-cassette`, `--trace-dir`), `audit`.
 
 ## Install & use
 
@@ -231,6 +254,30 @@ intentflow run examples/diagnose.iflow --backend openai      # OPENAI_API_KEY,
 python -m pytest                                  # run the test suite
 ```
 
+### Use from Python
+
+```python
+import intentflow
+
+program = intentflow.load("examples/diagnose.iflow")
+
+# register a Python function as a governed action (runs through the gate):
+program.register_tool(
+    "lookup_user", serves=("user_record",), handler=lambda src: "enterprise plan"
+)
+
+result = program.run(
+    backend="simulate",
+    workspace="examples/workspace",
+    judge="simulate",            # evaluate judged rules (separate trust tier)
+    approve={"deploy_change"},   # pre-grant a gated action
+    sign_key=b"my-trace-key",    # HMAC-seal the trace
+)
+
+report = intentflow.audit_document(program.compile(), result, sign_key=b"my-trace-key")
+assert report["conformant"]
+```
+
 Five examples ship with the repo: `examples/diagnose.iflow`,
 `examples/code_review.iflow`, `examples/research_question.iflow`,
 `examples/triage_issue.iflow` (governed open-source issue triage), and
@@ -251,22 +298,25 @@ conformance can be verified by a third party.
 
 ## Roadmap
 
-1. **Approval gates as blocking interactions** (interactive TTY / webhook),
-   not just pre-granted `--approve` lists.
-2. **Learned confidence calibration** from scored historical runs, replacing
+Shipped since the early prototype: blocking approval gates (TTY/webhook),
+the LLM-judge runner with a separate trust tier, hash-chained + HMAC-signed
+traces, the Python embedding API with governed Python tools, and recorded
+(cassette) backends for keyless CI. What's next:
+
+1. **Learned confidence calibration** from scored historical runs, replacing
    the shrinkage placeholder.
-3. **Signed traces** so witnesses are tamper-*evident*, not just
-   tamper-*detectable* against the plan.
-4. **Memory/context compiler** that turns `context:` policy into concrete
-   retrieval and eviction behavior.
-5. **Typed predicate vocabulary** for `verify:` beyond
-   `cites_evidence`/`requires_phrase`, plus an LLM-judge runner for judged
-   rules (still reported separately from machine checks).
-6. **DAG pipelines** with fan-out/fan-in, building on the linear pipelines
+2. **Memory/context compiler** that turns `context:` policy into concrete
+   retrieval and eviction behavior (`prefer`, `preserve`, `max_tokens`).
+3. **Richer machine verification predicates** beyond
+   `cites_evidence` / `requires_phrase` / `threshold_check`
+   (e.g. `consistent_with(source)`, numeric output bounds).
+4. **DAG pipelines** with fan-out/fan-in, building on the linear pipelines
    and static evidence-chain checking that exist today.
-7. **Python interop**: embed goals in Python programs and register Python
-   functions as governed actions.
-8. **Compiler optimizations** for token cost, latency, and risk.
+5. **Asynchronous/polling approval** (issue a request, resume on callback),
+   generalizing today's synchronous webhook approver.
+6. **Public-key trace signatures** (Ed25519) so witnesses are verifiable by
+   parties who do not share the signing secret, complementing today's HMAC.
+7. **Compiler optimizations** for token cost, latency, and risk.
 
 See [`docs/architecture.md`](docs/architecture.md) for the conceptual stack
 and design notes.
@@ -280,14 +330,17 @@ intentflow/
   parser.py       .iflow -> AST (goals + pipelines)
   compiler.py     AST -> validated execution plan (JSON), pipeline checking
   linter.py       static analysis of policies
-  backends.py     pluggable cognition (simulate / Anthropic / OpenAI-compatible)
+  backends.py     pluggable cognition (simulate / Anthropic / OpenAI) + cassettes
+  judges.py       LLM-judge runner for 'judged' verification rules
   formatter.py    idempotent, comment-preserving source formatter
-  tools.py        governed tools + the ActionGate enforcement point
-  runtime.py      phase-machine runtime with calibration and audit trace
+  tools.py        governed tools, the ActionGate, and approval channels
+  runtime.py      phase-machine runtime with calibration + hash-chained trace
   auditor.py      trace conformance checking (the contract/witness story)
+  api.py          Python embedding API (load / run / register_tool)
   cli.py          parse|validate|lint|compile|inspect|format|run|audit
 examples/         five demonstration programs + a real evidence workspace
-tests/            parser, compiler, runtime, tools, pipeline, lint, audit, CLI
+tests/            parser, compiler, runtime, tools, pipeline, lint, audit, CLI,
+                  judges, approvals, cassettes, trace chain, embedding API
 docs/             architecture notes
 ```
 
