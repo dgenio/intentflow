@@ -25,13 +25,47 @@ from intentflow.iflow_ast import (
     VerificationRule,
 )
 
-PLAN_VERSION = "0.2.0"
+PLAN_VERSION = "0.3.0"
 
 _THRESHOLD_RE = re.compile(
     r"^if\s+([a-z_]+)\s*(<=|>=|<|>|==)\s*([0-9]*\.?[0-9]+)\s+(\S+)$"
 )
 _SYMBOLIC_RE = re.compile(r"^if\s+(.+?)\s+(\S+)$")
 _MAX_TOKENS_RE = re.compile(r"^max_tokens\s+(\d+)$")
+#: ``check <metric> <op> <number>`` — a machine-checkable verification rule
+#: evaluated by the runtime against structured state (e.g. confidence).
+_CHECK_RE = re.compile(r"^check\s+([a-z_]+)\s*(<=|>=|<|>|==)\s*([0-9]*\.?[0-9]+)$")
+#: Whole-word citation verbs, so "explicit"/"implicit"/"solicit" do not match.
+_CITE_RE = re.compile(r"\bcit(?:e|es|ed|ing|ation|ations)\b")
+
+#: Verbs that suggest an action mutates the outside world (shared with the
+#: linter and the compiler's risk profiler).
+DESTRUCTIVE_TOKENS: tuple[str, ...] = (
+    "deploy",
+    "delete",
+    "drop",
+    "push",
+    "write",
+    "merge",
+    "force",
+    "shutdown",
+    "restart",
+)
+
+#: Built-in uncertainty control-flow actions the language understands as
+#: escalation primitives (as opposed to governed tool invocations).
+UNCERTAINTY_PRIMITIVES: tuple[str, ...] = (
+    "ask_human",
+    "escalate",
+    "abort",
+    "halt",
+    "defer",
+    "retry",
+    "run_discriminating_test",
+    "present_both_views",
+    "request_more_evidence",
+    "gather_more_evidence",
+)
 
 
 class CompileError(Exception):
@@ -116,8 +150,18 @@ def classify_verification(description: str) -> dict[str, str]:
     assumed to pass. The distinction is part of the plan because the two have
     very different trust properties.
     """
-    text = description.lower()
-    if "cite" in text:
+    text = description.lower().strip()
+    check_match = _CHECK_RE.match(text)
+    if check_match:
+        metric, op, value = check_match.groups()
+        return {
+            "kind": "threshold_check",
+            "metric": metric,
+            "op": op,
+            "value": float(value),
+            "mode": "machine",
+        }
+    if _CITE_RE.search(text):  # cite / cites / cited / citation(s)
         return {"kind": "cites_evidence", "mode": "machine"}
     if "rollback" in text:
         return {"kind": "requires_phrase", "arg": "rollback", "mode": "machine"}
@@ -239,6 +283,9 @@ def validate_goal(goal: Goal, source_name: str = "<string>") -> list[Diagnostic]
             )
         seen_modes[policy.action] = policy
 
+    allowed_or_gated = {
+        p.action for p in actions if p.mode in ("allow", "require_approval")
+    }
     for rule in uncertainty:
         if (
             rule.kind == "threshold"
@@ -250,6 +297,22 @@ def validate_goal(goal: Goal, source_name: str = "<string>") -> list[Diagnostic]
                 Diagnostic(
                     "error",
                     f"confidence threshold {rule.threshold} out of range [0, 1]",
+                    rule.line,
+                )
+            )
+        # An uncertainty action is either a known escalation primitive or a
+        # governed tool the goal allows. Anything else is most likely a typo
+        # or an action the author forgot to declare.
+        if (
+            rule.action not in UNCERTAINTY_PRIMITIVES
+            and rule.action not in allowed_or_gated
+        ):
+            diagnostics.append(
+                Diagnostic(
+                    "warning",
+                    f"uncertainty action {rule.action!r} is neither a built-in "
+                    "escalation primitive nor an allowed/approval-gated action; "
+                    "it will be recorded but cannot be executed",
                     rule.line,
                 )
             )
@@ -289,6 +352,47 @@ def validate_program(program: Program) -> list[Diagnostic]:
     return diagnostics
 
 
+def inspect_goal(goal: Goal, source_name: str = "<string>") -> dict[str, Any]:
+    """A structured, at-a-glance view of a goal for ``intentflow inspect``:
+    sections present, action governance, required evidence, output fields,
+    and any validation warnings/errors — without compiling a full plan."""
+    try:
+        actions = extract_actions(goal, source_name)
+        evidence = extract_evidence(goal, source_name)
+    except CompileError:
+        actions, evidence = [], []
+    diagnostics = validate_goal(goal, source_name)
+    return {
+        "goal": goal.name,
+        "objective": extract_objective(goal),
+        "sections": list(goal.sections),
+        "allowed_actions": [a.action for a in actions if a.mode == "allow"],
+        "approval_gated_actions": [
+            a.action for a in actions if a.mode == "require_approval"
+        ],
+        "denied_actions": [a.action for a in actions if a.mode == "deny"],
+        "required_evidence": [e.source for e in evidence if e.stance == "require"],
+        "distrusted_evidence": [e.source for e in evidence if e.stance == "distrust"],
+        "output_fields": extract_output(goal).fields,
+        "diagnostics": [
+            {"level": d.level, "message": d.message, "line": d.line}
+            for d in diagnostics
+        ],
+    }
+
+
+def inspect_program(program: Program) -> dict[str, Any]:
+    """Inspect every goal in a program plus its pipelines."""
+    return {
+        "source": program.source_name,
+        "goals": [inspect_goal(g, program.source_name) for g in program.goals],
+        "pipelines": [
+            {"name": p.name, "stages": [s.goal_name for s in p.stages]}
+            for p in program.pipelines
+        ],
+    }
+
+
 # ---------------------------------------------------------------------------
 # Execution plan
 # ---------------------------------------------------------------------------
@@ -308,7 +412,8 @@ class ExecutionPlan:
     uncertainty_policy: list[dict[str, Any]]
     calibration: dict[str, Any]
     outputs: list[str]
-    trace: dict[str, Any]
+    risk_profile: dict[str, Any]
+    trace_policy: dict[str, Any]
     prompt_plan: list[dict[str, str]]
     plan_version: str = PLAN_VERSION
 
@@ -323,65 +428,136 @@ def _build_prompt_plan(
     actions: list[ActionPolicy],
     model_directives: list[str],
     verification: list[VerificationRule],
+    uncertainty: list[UncertaintyRule],
     outputs: OutputSpec,
 ) -> list[dict[str, str]]:
-    """A staged prompt plan: each phase becomes one governed LLM interaction
-    rather than a single opaque mega-prompt."""
+    """A staged prompt plan: one governed block per concern, instead of a
+    single opaque mega-prompt.
+
+    Each block is a distinct, inspectable message so that *what the model is
+    told about evidence, allowed actions, denied actions, verification,
+    uncertainty handling, and the required output format* is visible (and
+    diffable) before any model runs. This is the difference between compiling
+    intent into a controlled interaction and merely concatenating a prompt.
+    """
     required = [e.source for e in evidence if e.stance == "require"]
+    preferred = [e.source for e in evidence if e.stance == "prefer"]
     distrusted = [e.source for e in evidence if e.stance == "distrust"]
     allowed = [a.action for a in actions if a.mode == "allow"]
     gated = [a.action for a in actions if a.mode == "require_approval"]
     denied = [a.action for a in actions if a.mode == "deny"]
 
-    frame = (
-        f"You are executing the IntentFlow goal '{goal_name}'. "
-        f"Objective: {objective} "
-        "Separate observation from inference, attach a confidence in [0, 1] "
-        "to every conclusion, and never take an action outside the allowed list."
+    system = (
+        f"You are executing the IntentFlow goal '{goal_name}'. You are a "
+        "governed reasoning process: separate observation from inference, "
+        "attach a confidence in [0, 1] to every conclusion, cite evidence ids "
+        "for every claim, and never take an action outside the allowed list."
     )
-    if allowed:
-        frame += f" Allowed actions: {', '.join(allowed)}."
-    if gated:
-        frame += f" Actions requiring human approval before use: {', '.join(gated)}."
-    if denied:
-        frame += f" Forbidden actions: {', '.join(denied)}."
+    if model_directives:
+        system += " Reasoning discipline: " + "; ".join(model_directives) + "."
 
-    evidence_instruction = (
-        "Collect all required evidence before reasoning: "
+    objective_block = f"Objective: {objective}"
+
+    evidence_block = (
+        "Required evidence (collect before reasoning, label each item E1, E2, ...): "
         + (", ".join(required) if required else "(none declared)")
-        + ". Label each evidence item with a stable id (E1, E2, ...)."
     )
+    if preferred:
+        evidence_block += f". Prefer when available: {', '.join(preferred)}"
     if distrusted:
-        evidence_instruction += (
-            " Treat the following as untrusted and never cite them as sole "
-            f"support: {', '.join(distrusted)}."
+        evidence_block += (
+            f". Treat as untrusted, never cite as sole support: {', '.join(distrusted)}"
         )
 
-    model_instruction = (
-        "Reason over the collected evidence only. "
-        + " ".join(d.capitalize() + "." for d in model_directives)
-        + " Cite evidence ids for every hypothesis."
-    ).strip()
+    allowed_block = (
+        "Allowed actions (you may call these): "
+        + (", ".join(allowed) if allowed else "(none)")
+    )
+    if gated:
+        allowed_block += (
+            f". Approval-gated (blocked until a human approves): {', '.join(gated)}"
+        )
 
-    verify_instruction = (
+    denied_block = (
+        "Forbidden actions (never call these): "
+        + (", ".join(denied) if denied else "(none)")
+    )
+
+    verify_block = (
         "Before producing output, check the result against every rule and "
         "report pass/fail per rule: "
         + ("; ".join(r.description for r in verification) if verification else "(none)")
     )
 
-    output_instruction = (
+    uncertainty_block = (
+        "Uncertainty handling — when a condition holds, take the named action: "
+        + (
+            "; ".join(f"if {r.condition} -> {r.action}" for r in uncertainty)
+            if uncertainty
+            else "(none)"
+        )
+    )
+
+    output_block = (
         "Produce a JSON object with exactly these fields: "
         + (", ".join(outputs.fields) if outputs.fields else "(unspecified)")
         + ". Do not add commentary outside the JSON object."
     )
 
     return [
-        {"phase": "frame", "role": "system", "instruction": frame},
-        {"phase": "evidence", "role": "user", "instruction": evidence_instruction},
-        {"phase": "model", "role": "user", "instruction": model_instruction},
-        {"phase": "verify", "role": "user", "instruction": verify_instruction},
-        {"phase": "output", "role": "user", "instruction": output_instruction},
+        {"phase": "system", "role": "system", "instruction": system},
+        {"phase": "objective", "role": "user", "instruction": objective_block},
+        {"phase": "evidence", "role": "user", "instruction": evidence_block},
+        {"phase": "actions_allowed", "role": "user", "instruction": allowed_block},
+        {"phase": "actions_denied", "role": "user", "instruction": denied_block},
+        {"phase": "verify", "role": "user", "instruction": verify_block},
+        {"phase": "uncertainty", "role": "user", "instruction": uncertainty_block},
+        {"phase": "output", "role": "user", "instruction": output_block},
     ]
+
+
+def _build_risk_profile(
+    allowed: list[str],
+    gated: list[str],
+    denied: list[str],
+    verification: list[VerificationRule],
+) -> dict[str, Any]:
+    """Summarize the goal's risk posture from its action and verification
+    policy. Because risk is visible in the IR, it is part of the plan a
+    reviewer reads before approving a run."""
+    destructive_allowed = [
+        a for a in allowed if any(tok in a.lower() for tok in DESTRUCTIVE_TOKENS)
+    ]
+    has_rollback = any("rollback" in r.description.lower() for r in verification)
+    factors: list[str] = []
+    if destructive_allowed:
+        factors.append(
+            "destructive actions allowed without approval gating: "
+            + ", ".join(destructive_allowed)
+        )
+    if gated:
+        factors.append("approval-gated actions present: " + ", ".join(gated))
+    if denied:
+        factors.append("explicitly denied actions: " + ", ".join(denied))
+    if not has_rollback and (destructive_allowed or gated):
+        factors.append("no verification rule requires a rollback path")
+
+    if destructive_allowed:
+        level = "high"
+    elif gated or denied:
+        level = "medium"
+    else:
+        level = "low"
+
+    return {
+        "level": level,
+        "destructive_actions_allowed": destructive_allowed,
+        "approval_gated_actions": list(gated),
+        "denied_actions": list(denied),
+        "requires_human_approval": bool(gated),
+        "has_rollback_requirement": has_rollback,
+        "factors": factors,
+    }
 
 
 def compile_goal(goal: Goal, source_name: str = "<string>") -> ExecutionPlan:
@@ -402,6 +578,10 @@ def compile_goal(goal: Goal, source_name: str = "<string>") -> ExecutionPlan:
     uncertainty = extract_uncertainty(goal, source_name)
     outputs = extract_output(goal)
     model_directives = extract_model_directives(goal)
+
+    allowed = [a.action for a in actions if a.mode == "allow"]
+    gated = [a.action for a in actions if a.mode == "require_approval"]
+    denied = [a.action for a in actions if a.mode == "deny"]
 
     return ExecutionPlan(
         goal=goal.name,
@@ -449,10 +629,11 @@ def compile_goal(goal: Goal, source_name: str = "<string>") -> ExecutionPlan:
             for r in uncertainty
         ],
         outputs=list(outputs.fields),
-        trace={"enabled": True, "level": "full", "record_prompts": True},
+        risk_profile=_build_risk_profile(allowed, gated, denied, verification),
+        trace_policy={"enabled": True, "level": "full", "record_prompts": True},
         prompt_plan=_build_prompt_plan(
             goal.name, objective, evidence, actions, model_directives,
-            verification, outputs,
+            verification, uncertainty, outputs,
         ),
     )
 

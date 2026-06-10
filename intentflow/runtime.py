@@ -18,11 +18,15 @@ lives here, outside the model:
 
 from __future__ import annotations
 
+import hashlib
+import hmac
+import json
 import operator
 from typing import Any, Callable
 
 from intentflow.backends import CognitionBackend, Hypothesis, SimulatedCognition
-from intentflow.tools import ActionDenied, ActionGate, ToolError, ToolRegistry
+from intentflow.judges import Judge
+from intentflow.tools import ActionDenied, ActionGate, ApprovalError, Approver, ToolError, ToolRegistry
 
 #: The phase order every conformant run must follow (checked by the auditor).
 CANONICAL_PHASES: tuple[str, ...] = (
@@ -47,24 +51,80 @@ _OPS: dict[str, Callable[[float, float], bool]] = {
 }
 
 
-class Trace:
-    """An auditable, append-only record of everything the runtime did."""
+#: The first link of every trace hash chain (no prior event).
+GENESIS_HASH = "0" * 64
 
-    def __init__(self) -> None:
+#: Keys that make up an event's *core* — the part that is hash-chained. The
+#: ``hash``/``prev_hash`` links and presentation-only tags (e.g. ``stage``)
+#: are excluded so the chain is stable across serialization and pipelining.
+_CORE_KEYS = ("seq", "phase", "event", "detail")
+
+
+def _event_core(event: dict[str, Any]) -> dict[str, Any]:
+    return {k: event.get(k) for k in _CORE_KEYS}
+
+
+def link_hash(prev_hash: str, event: dict[str, Any]) -> str:
+    """The hash that chains ``event`` to its predecessor.
+
+    ``sha256(prev_hash || canonical(core))`` — so any edit, deletion, or
+    reordering is detected when the chain is recomputed (unless a forger also
+    recomputes every downstream link; see :class:`Trace`). Canonicalization is
+    JSON with sorted keys, so the chain survives a round-trip through disk.
+    """
+    payload = prev_hash + json.dumps(
+        _event_core(event), sort_keys=True, default=str
+    )
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()
+
+
+class Trace:
+    """An auditable, append-only, hash-chained record of a run.
+
+    Each event carries ``prev_hash`` and ``hash`` forming a chain rooted at
+    :data:`GENESIS_HASH`. Recomputing the chain detects accidental corruption,
+    truncation, and reordering without the program. The links live *inside* the
+    trace, though, so a motivated forger can edit an event and recompute every
+    downstream hash — the bare chain is integrity, not authenticity. Sealing
+    the root out of band closes that gap: with a signing key, ``seal()`` adds an
+    HMAC over the root so anyone holding the key can *detect* (not prevent)
+    edits, even to runs they did not execute.
+    """
+
+    def __init__(self, sign_key: bytes | None = None) -> None:
         self.events: list[dict[str, Any]] = []
+        self._prev = GENESIS_HASH
+        self._sign_key = sign_key
 
     def record(self, phase: str, event: str, detail: dict[str, Any] | None = None) -> None:
-        self.events.append(
-            {
-                "seq": len(self.events) + 1,
-                "phase": phase,
-                "event": event,
-                "detail": detail or {},
-            }
-        )
+        entry = {
+            "seq": len(self.events) + 1,
+            "phase": phase,
+            "event": event,
+            "detail": detail or {},
+        }
+        entry["prev_hash"] = self._prev
+        entry["hash"] = link_hash(self._prev, entry)
+        self._prev = entry["hash"]
+        self.events.append(entry)
 
     def to_list(self) -> list[dict[str, Any]]:
         return list(self.events)
+
+    def seal(self) -> dict[str, Any]:
+        """A compact, verifiable summary of the chain: algorithm, length,
+        root hash, and (if a key was supplied) an HMAC signature over it."""
+        signature = None
+        if self._sign_key is not None:
+            signature = hmac.new(
+                self._sign_key, self._prev.encode("utf-8"), hashlib.sha256
+            ).hexdigest()
+        return {
+            "algo": "sha256-chain",
+            "length": len(self.events),
+            "root": self._prev,
+            "signature": signature,
+        }
 
 
 def calibrate(raw: float, policy: dict[str, Any]) -> float:
@@ -87,12 +147,27 @@ class GoalRuntime:
         workspace: str | None = None,
         approved_actions: set[str] | None = None,
         seed_evidence: list[dict[str, Any]] | None = None,
+        judge: Judge | None = None,
+        approver: Approver | None = None,
+        registry: ToolRegistry | None = None,
+        sign_key: bytes | None = None,
     ) -> None:
         self.plan = plan
         self.backend = backend or SimulatedCognition()
-        self.trace = Trace()
-        self.gate = ActionGate(plan["actions"], trace=self.trace, approved=approved_actions)
-        self.registry = ToolRegistry.builtin(workspace) if workspace else None
+        self.trace = Trace(sign_key=sign_key)
+        self.gate = ActionGate(
+            plan["actions"],
+            trace=self.trace,
+            approved=approved_actions,
+            approver=approver,
+        )
+        if registry is not None:
+            self.registry = registry
+        elif workspace:
+            self.registry = ToolRegistry.builtin(workspace)
+        else:
+            self.registry = None
+        self.judge = judge
         self.seed_evidence = {item["source"]: item for item in (seed_evidence or [])}
         self._printer = printer
         self.evidence: list[dict[str, Any]] = []
@@ -135,16 +210,56 @@ class GoalRuntime:
         outputs = self._produce_outputs(verification)
 
         self.trace.record("done", "run_completed", {"status": "completed"})
+        trace_events = self.trace.to_list()
+        summary = self._summarize(verification, trace_events)
         return {
             "goal": self.plan["goal"],
             "backend": self.backend.name,
             "status": "completed",
             "outputs": outputs,
+            "summary": summary,
+            "trace_id": summary["trace_id"],
             "hypotheses": [h.to_dict() for h in self.hypotheses],
             "evidence": self.evidence,
             "verification": verification,
             "escalations": self.escalations,
-            "trace": self.trace.to_list(),
+            "trace": trace_events,
+            "trace_chain": self.trace.seal(),
+        }
+
+    def _summarize(
+        self, verification: dict[str, Any], trace_events: list[dict[str, Any]]
+    ) -> dict[str, Any]:
+        """A flat, human-first summary of the run: what was decided, which
+        actions ran, which were blocked. ``trace_id`` is a deterministic hash
+        of the plan and trace so identical runs produce identical ids (the
+        wall-clock timestamp lives only in the saved trace artifact)."""
+        requested = [
+            e["detail"]["action"]
+            for e in trace_events
+            if e["event"] == "tool_invoked"
+        ]
+        blocked = [
+            {"action": e["detail"].get("action"), "reason": e["detail"].get("reason")}
+            for e in trace_events
+            if e["event"] in ("action_blocked", "approval_denied")
+        ]
+        top = self._top()
+        digest = hashlib.sha256(
+            json.dumps(
+                {"plan": self.plan, "trace": trace_events},
+                sort_keys=True,
+                default=str,
+            ).encode("utf-8")
+        ).hexdigest()[:16]
+        return {
+            "trace_id": digest,
+            "confidence": round(top.confidence, 3) if top else None,
+            "verification_status": "passed" if verification["passed"] else "failed",
+            "uncertainty_status": "escalated" if self.escalations else "clear",
+            "actions_requested": requested,
+            "actions_blocked": blocked,
+            "escalation_count": len(self.escalations),
         }
 
     def _apply_context_policy(self) -> None:
@@ -323,28 +438,52 @@ class GoalRuntime:
     # -- verification ------------------------------------------------------
 
     def _apply_verification(self) -> dict[str, Any]:
-        self._phase("verify", "run verification checklist")
+        which = f"judge: {self.judge.name}" if self.judge else "machine checks only"
+        self._phase("verify", f"run verification checklist ({which})")
         checks: list[dict[str, Any]] = []
         for rule in self.plan["verification"]:
-            status, note = self._evaluate_check(rule["check"])
-            checks.append(
-                {
-                    "id": rule["id"],
-                    "rule": rule["rule"],
-                    "mode": rule["check"]["mode"],
-                    "status": status,
-                    "note": note,
-                }
-            )
-            self._say(f"  {rule['id']} [{status.upper()}] {rule['rule']}")
+            status, note, judged_by = self._evaluate_check(rule)
+            entry = {
+                "id": rule["id"],
+                "rule": rule["rule"],
+                "mode": rule["check"]["mode"],
+                "status": status,
+                "note": note,
+            }
+            if judged_by is not None:
+                entry["judged_by"] = judged_by
+            checks.append(entry)
+            label = f" via {judged_by}" if judged_by else ""
+            self._say(f"  {rule['id']} [{status.upper()}]{label} {rule['rule']}")
             # Record a snapshot, not the live dict: the trace must stay an
             # independent witness of what happened at this moment.
             self.trace.record("verify", "check_evaluated", dict(checks[-1]))
-        passed = all(c["status"] != "fail" for c in checks)
-        self.trace.record("verify", "checklist_completed", {"passed": passed})
-        return {"passed": passed, "checks": checks}
 
-    def _evaluate_check(self, check: dict[str, str]) -> tuple[str, str]:
+        passed = all(c["status"] != "fail" for c in checks)
+        # Keep the two trust tiers visible and separate: a machine check is a
+        # proof; a judged check is a model's opinion. They are reported apart
+        # so neither is mistaken for the other.
+        tiers = {
+            tier: self._tier_summary(checks, tier)
+            for tier in ("machine", "judged")
+        }
+        self.trace.record(
+            "verify", "checklist_completed", {"passed": passed, "tiers": tiers}
+        )
+        return {"passed": passed, "checks": checks, "tiers": tiers}
+
+    @staticmethod
+    def _tier_summary(checks: list[dict[str, Any]], tier: str) -> dict[str, Any]:
+        members = [c for c in checks if c["mode"] == tier]
+        return {
+            "total": len(members),
+            "passed": sum(c["status"] == "pass" for c in members),
+            "failed": sum(c["status"] == "fail" for c in members),
+            "skipped": sum(c["status"] == "skipped" for c in members),
+        }
+
+    def _evaluate_check(self, rule: dict[str, Any]) -> tuple[str, str, str | None]:
+        check = rule["check"]
         kind = check["kind"]
         if kind == "cites_evidence":
             evidence_ids = {e["id"] for e in self.evidence}
@@ -354,16 +493,39 @@ class GoalRuntime:
                 if not h.citations or not set(h.citations) <= evidence_ids
             ]
             if bad:
-                return "fail", f"hypotheses without valid citations: {', '.join(bad)}"
-            return "pass", "every hypothesis cites collected evidence ids"
+                return "fail", f"hypotheses without valid citations: {', '.join(bad)}", None
+            return "pass", "every hypothesis cites collected evidence ids", None
         if kind == "requires_phrase":
             phrase = check["arg"]
             if self.proposed_fix and phrase in self.proposed_fix.lower():
-                return "pass", f"proposal includes required phrase '{phrase}'"
-            return "fail", f"proposal missing required phrase '{phrase}'"
-        # Judged rules need an LLM judge; recording them as skipped keeps the
-        # trust boundary honest — they are never silently assumed to pass.
-        return "skipped", "judged rule; requires an LLM judge (recorded, not evaluated)"
+                return "pass", f"proposal includes required phrase '{phrase}'", None
+            return "fail", f"proposal missing required phrase '{phrase}'", None
+        if kind == "threshold_check":
+            metric, op, value = check["metric"], check["op"], check["value"]
+            top = self._top()
+            if metric != "confidence" or top is None:
+                return "skipped", f"metric '{metric}' not evaluable by the runtime", None
+            ok = _OPS[op](top.confidence, value)
+            note = f"confidence {top.confidence:.2f} {op} {value}"
+            return ("pass" if ok else "fail"), note, None
+        # Judged rule: run the LLM judge if one is configured (separate trust
+        # tier). With no judge, record as skipped — never silently passed.
+        if self.judge is not None:
+            verdict = self.judge.judge(rule["rule"], self._judge_context())
+            return ("pass" if verdict.passed else "fail"), verdict.rationale, self.judge.name
+        return "skipped", "judged rule; no judge configured (recorded, not evaluated)", None
+
+    def _judge_context(self) -> dict[str, Any]:
+        return {
+            "objective": self.plan["objective"],
+            "top_hypothesis": self._top().statement if self._top() else None,
+            "proposed_fix": self.proposed_fix,
+            "hypotheses": [h.to_dict() for h in self.hypotheses],
+            "evidence": [
+                {"id": e["id"], "source": e["source"], "summary": e.get("summary")}
+                for e in self.evidence
+            ],
+        }
 
     # -- output ------------------------------------------------------------
 
@@ -396,6 +558,12 @@ class GoalRuntime:
             "open_questions": [
                 h.statement for h in self.hypotheses[1:] if h.confidence >= 0.3
             ],
+            "summary": f"[simulated] {top.statement}",
+            "likely_cause": top.statement,
+            "suggested_response": self.proposed_fix
+            or f"Thanks for the report — based on {top.hypothesis_id}, {top.statement}",
+            "proposed_labels": ["needs-triage"]
+            + (["needs-reproduction"] if confidence < 0.7 else ["confirmed"]),
         }
         return known.get(name, f"[unmapped] value for '{name}'")
 
@@ -411,6 +579,10 @@ def run_pipeline(
     printer: Callable[[str], None] | None = print,
     workspace: str | None = None,
     approved_actions: set[str] | None = None,
+    judge: Judge | None = None,
+    approver: Approver | None = None,
+    registry: ToolRegistry | None = None,
+    sign_key: bytes | None = None,
 ) -> dict[str, Any]:
     """Run a compiled pipeline: stages execute in order, and each stage's
     structured outputs become addressable evidence (``Goal.field``) for
@@ -449,6 +621,10 @@ def run_pipeline(
             workspace=workspace,
             approved_actions=approved_actions,
             seed_evidence=seed,
+            judge=judge,
+            approver=approver,
+            registry=registry,
+            sign_key=sign_key,
         )
         result = runtime.run()
         outputs_by_goal[stage_name] = result["outputs"]

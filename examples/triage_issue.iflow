@@ -1,0 +1,42 @@
+# Triage an incoming GitHub issue as a governed, maintainer-safe process.
+# Demonstrates: approval-gated outward actions (commenting), evidence from
+# the issue itself, and uncertainty escalation when a repro is missing.
+
+goal TriageGitHubIssue {
+  objective:
+    triage an incoming GitHub issue and propose a maintainer-safe response
+
+  context:
+    max_tokens 12000
+    prefer issue_body
+    preserve maintainer_guidelines
+
+  evidence:
+    require issue_body
+    require comments
+    require repo_context
+    distrust speculation_without_sources
+
+  model:
+    propose likely causes with confidence
+    separate observation from inference
+
+  actions:
+    allow read_issue
+    allow search_repo
+    require_approval comment_on_issue
+
+  verify:
+    require reproduction_steps
+    require maintainer_safe_tone
+
+  uncertainty:
+    if confidence < 0.6 ask_human
+    if missing_reproduction ask_human
+
+  output:
+    summary
+    likely_cause
+    suggested_response
+    proposed_labels
+}

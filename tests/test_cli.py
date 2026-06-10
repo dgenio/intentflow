@@ -33,17 +33,26 @@ def test_validate_reports_errors(tmp_path, capsys: pytest.CaptureFixture[str]) -
     assert "no objective" in capsys.readouterr().out
 
 
-def test_run_requires_simulate_flag(capsys: pytest.CaptureFixture[str]) -> None:
-    assert main(["run", "examples/diagnose.iflow"]) == 1
-    assert "--simulate" in capsys.readouterr().err
+def test_run_defaults_to_simulate(capsys: pytest.CaptureFixture[str]) -> None:
+    # No flags: the simulate backend is the default and the run completes.
+    assert main(["run", "examples/diagnose.iflow"]) == 0
+    out = capsys.readouterr().out
+    assert "backend: simulate" in out
+    assert "=== final result ===" in out
+
+
+def _result_json(out: str) -> dict:
+    body = out.split("=== final result ===", 1)[1].split("--- summary ---", 1)[0]
+    return json.loads(body)
 
 
 def test_run_simulate_emits_result_and_trace(capsys: pytest.CaptureFixture[str]) -> None:
     assert main(["run", "examples/diagnose.iflow", "--simulate"]) == 0
     out = capsys.readouterr().out
     assert "=== final result ===" in out
-    result = json.loads(out.split("=== final result ===", 1)[1])
+    result = _result_json(out)
     assert result["trace"]
+    assert result["summary"]["verification_status"] in ("passed", "failed")
 
 
 def test_parse_error_exits_2(tmp_path, capsys: pytest.CaptureFixture[str]) -> None:
@@ -53,3 +62,127 @@ def test_parse_error_exits_2(tmp_path, capsys: pytest.CaptureFixture[str]) -> No
         main(["parse", str(bad)])
     assert exc_info.value.code == 2
     assert "parse error" in capsys.readouterr().err
+
+
+def test_validate_json_output(capsys: pytest.CaptureFixture[str]) -> None:
+    assert main(["validate", "examples/diagnose.iflow", "--json"]) == 0
+    report = json.loads(capsys.readouterr().out)
+    assert report["ok"] is True
+    assert report["error_count"] == 0
+    assert "diagnostics" in report
+
+
+def test_validate_json_reports_errors(tmp_path, capsys: pytest.CaptureFixture[str]) -> None:
+    bad = tmp_path / "bad.iflow"
+    bad.write_text("goal G {\n  output:\n    result\n}\n")
+    assert main(["validate", str(bad), "--json"]) == 1
+    report = json.loads(capsys.readouterr().out)
+    assert report["ok"] is False
+    assert any("no objective" in d["message"] for d in report["diagnostics"])
+
+
+def test_inspect_human_output(capsys: pytest.CaptureFixture[str]) -> None:
+    assert main(["inspect", "examples/diagnose.iflow"]) == 0
+    out = capsys.readouterr().out
+    assert "goal DiagnoseProductionIssue" in out
+    assert "deploy_change" in out  # approval-gated action surfaced
+    assert "root_cause" in out  # output field surfaced
+
+
+def test_inspect_json_output(capsys: pytest.CaptureFixture[str]) -> None:
+    assert main(["inspect", "examples/diagnose.iflow", "--json"]) == 0
+    report = json.loads(capsys.readouterr().out)
+    goal = report["goals"][0]
+    assert goal["approval_gated_actions"] == ["deploy_change"]
+    assert goal["required_evidence"] == ["logs", "config", "recent_commits"]
+
+
+def test_format_check_passes_on_canonical_file(capsys: pytest.CaptureFixture[str]) -> None:
+    assert main(["format", "examples/diagnose.iflow", "--check"]) == 0
+
+
+def test_format_check_fails_on_messy_file(tmp_path, capsys: pytest.CaptureFixture[str]) -> None:
+    messy = tmp_path / "messy.iflow"
+    messy.write_text("goal G {\nobjective:\nx\noutput:\nresult\n}\n")
+    assert main(["format", str(messy), "--check"]) == 1
+    assert "not formatted" in capsys.readouterr().err
+
+
+def test_format_write_makes_check_pass(tmp_path) -> None:
+    messy = tmp_path / "messy.iflow"
+    messy.write_text("goal G {\nobjective:\nx\noutput:\nresult\n}\n")
+    assert main(["format", str(messy), "--write"]) == 0
+    assert main(["format", str(messy), "--check"]) == 0
+
+
+def test_run_trace_dir_writes_artifact(tmp_path, capsys: pytest.CaptureFixture[str]) -> None:
+    trace_dir = tmp_path / "traces"
+    code = main(
+        ["run", "examples/diagnose.iflow", "--backend", "simulate",
+         "--trace-dir", str(trace_dir)]
+    )
+    assert code == 0
+    artifacts = list(trace_dir.glob("*.json"))
+    assert len(artifacts) == 1
+    artifact = json.loads(artifacts[0].read_text())
+    assert artifact["backend"] == "simulate"
+    assert artifact["plan_hash"]
+    assert artifact["result"]["goal"] == "DiagnoseProductionIssue"
+    assert artifact["result"]["trace"]
+
+
+def test_run_backend_simulate_explicit(capsys: pytest.CaptureFixture[str]) -> None:
+    assert main(["run", "examples/diagnose.iflow", "--backend", "simulate"]) == 0
+    assert "backend: simulate" in capsys.readouterr().out
+
+
+def test_run_with_judge_flag(capsys: pytest.CaptureFixture[str]) -> None:
+    code = main(
+        ["run", "examples/triage_issue.iflow", "--simulate",
+         "--workspace", "examples/workspace", "--judge", "simulate"]
+    )
+    assert code == 0
+    assert "judge: simulate-judge" in capsys.readouterr().out
+
+
+def test_run_sign_trace_requires_key(monkeypatch, capsys: pytest.CaptureFixture[str]) -> None:
+    monkeypatch.delenv("IFLOW_TRACE_KEY", raising=False)
+    assert main(["run", "examples/diagnose.iflow", "--simulate", "--sign-trace"]) == 1
+    assert "IFLOW_TRACE_KEY" in capsys.readouterr().err
+
+
+def test_run_replay_requires_cassette(capsys: pytest.CaptureFixture[str]) -> None:
+    assert main(["run", "examples/diagnose.iflow", "--backend", "replay"]) == 1
+    assert "cassette" in capsys.readouterr().err
+
+
+def test_run_sign_and_audit_roundtrip(tmp_path, monkeypatch) -> None:
+    monkeypatch.setenv("IFLOW_TRACE_KEY", "clitestkey")
+    trace_dir = tmp_path / "traces"
+    assert main(
+        ["run", "examples/diagnose.iflow", "--simulate", "--sign-trace",
+         "--trace-dir", str(trace_dir)]
+    ) == 0
+    artifact = next(trace_dir.glob("*.json"))
+    assert main(["audit", "examples/diagnose.iflow", str(artifact)]) == 0
+
+
+def test_triage_example_runs_and_audits(tmp_path) -> None:
+    # End-to-end: compile, run in simulate, then independently audit.
+    from intentflow.auditor import audit_document
+    from intentflow.compiler import compile_program
+    from intentflow.parser import parse_file
+    from intentflow.runtime import GoalRuntime
+
+    document = compile_program(parse_file("examples/triage_issue.iflow"))
+    result = GoalRuntime(
+        document["plans"][0], printer=None, workspace="examples/workspace"
+    ).run()
+    assert set(result["outputs"]) == {
+        "summary",
+        "likely_cause",
+        "suggested_response",
+        "proposed_labels",
+    }
+    report = audit_document(document, result)
+    assert report["conformant"] is True
