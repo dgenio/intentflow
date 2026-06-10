@@ -178,10 +178,25 @@ def parse_model_json(
                 statement=str(hyp.get("statement", "")),
                 raw_confidence=raw,
                 confidence=raw,
-                citations=[c for c in hyp.get("citations", []) if c in valid_ids],
+                citations=[c for c in _as_citation_list(hyp.get("citations")) if c in valid_ids],
             )
         )
     return Proposal(hypotheses=hypotheses, proposed_fix=payload.get("proposed_fix"))
+
+
+def _as_citation_list(value: Any) -> list[str]:
+    """Normalize a model's ``citations`` field to a list of ids.
+
+    Models occasionally return a bare string (``"E1"``) or ``null`` instead of
+    a list; iterating a string would yield characters and garble citations, so
+    coerce defensively."""
+    if value is None:
+        return []
+    if isinstance(value, str):
+        return [value]
+    if isinstance(value, (list, tuple)):
+        return [str(c) for c in value]
+    return []
 
 
 class AnthropicCognition:

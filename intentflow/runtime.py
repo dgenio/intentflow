@@ -67,9 +67,10 @@ def _event_core(event: dict[str, Any]) -> dict[str, Any]:
 def link_hash(prev_hash: str, event: dict[str, Any]) -> str:
     """The hash that chains ``event`` to its predecessor.
 
-    ``sha256(prev_hash || canonical(core))`` — so any edit to an event, any
-    deletion, or any reordering breaks every link after it. Canonicalization
-    is JSON with sorted keys, so the chain survives a round-trip through disk.
+    ``sha256(prev_hash || canonical(core))`` — so any edit, deletion, or
+    reordering is detected when the chain is recomputed (unless a forger also
+    recomputes every downstream link; see :class:`Trace`). Canonicalization is
+    JSON with sorted keys, so the chain survives a round-trip through disk.
     """
     payload = prev_hash + json.dumps(
         _event_core(event), sort_keys=True, default=str
@@ -81,9 +82,13 @@ class Trace:
     """An auditable, append-only, hash-chained record of a run.
 
     Each event carries ``prev_hash`` and ``hash`` forming a chain rooted at
-    :data:`GENESIS_HASH`. With no key the chain is *tamper-evident* on its own
-    (the auditor can recompute it without the program). With a signing key the
-    sealed root is also *tamper-proof* against anyone lacking the key.
+    :data:`GENESIS_HASH`. Recomputing the chain detects accidental corruption,
+    truncation, and reordering without the program. The links live *inside* the
+    trace, though, so a motivated forger can edit an event and recompute every
+    downstream hash — the bare chain is integrity, not authenticity. Sealing
+    the root out of band closes that gap: with a signing key, ``seal()`` adds an
+    HMAC over the root so anyone holding the key can *detect* (not prevent)
+    edits, even to runs they did not execute.
     """
 
     def __init__(self, sign_key: bytes | None = None) -> None:

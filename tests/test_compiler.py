@@ -112,6 +112,19 @@ def test_risk_profile_is_part_of_the_plan(diagnose_plan: dict) -> None:
     assert risk["approval_gated_actions"] == ["deploy_change"]
 
 
+def test_citation_classifier_matches_only_whole_words() -> None:
+    from intentflow.compiler import classify_verification
+
+    # whole-word citation verbs -> machine cites_evidence check
+    for rule in ("each claim must cite a source", "require citations",
+                 "every finding is cited"):
+        assert classify_verification(rule)["kind"] == "cites_evidence", rule
+    # words that merely contain "cit" must NOT be treated as citation checks
+    for rule in ("be explicit about assumptions", "keep implicit state visible",
+                 "do not solicit private data"):
+        assert classify_verification(rule)["kind"] == "judged", rule
+
+
 def test_threshold_check_verification_is_machine_checkable() -> None:
     source = (
         "goal G {\n  objective:\n    x\n"

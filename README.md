@@ -33,10 +33,10 @@ become:
 
 ### Why it is not just Python / LangChain / prompt templates
 
-IntentFlow is **not** trying to replace Python. Python programs *deterministic
-computation*; IntentFlow programs *governed cognition*. They compose — an
-IntentFlow goal can call Python functions as governed actions, and Python can
-compile and run an IntentFlow goal.
+IntentFlow is **not** trying to replace Python. Python *programs* deterministic
+computation; IntentFlow *programs* governed cognition (using "program" as a
+verb). They compose — an IntentFlow goal can call Python functions as governed
+actions, and Python can compile and run an IntentFlow goal.
 
 | | What you write | Determinism | Where governance lives | Auditable? |
 | --- | --- | --- | --- | --- |
@@ -193,10 +193,12 @@ format that agree with each other — which is exactly what IntentFlow is.
   rationale and are reported apart from machine checks, never merged with
   them. With no judge they stay *skipped*, never silently passed.
 - **Hash-chained, optionally signed traces**: every trace event is linked by
-  `sha256(prev || event)`, so an edited, deleted, or reordered event is
-  detectable *standalone* — the auditor recomputes the chain without the
-  program. `--sign-trace` (with `IFLOW_TRACE_KEY`) HMAC-seals the root so a
-  third party can prove a trace was produced by a key holder.
+  `sha256(prev || event)`, so the auditor recomputes the chain *without the
+  program* and catches accidental corruption, truncation, or reordering. The
+  bare chain is integrity, not authenticity — its links live in the trace, so a
+  forger could recompute them. `--sign-trace` (with `IFLOW_TRACE_KEY`)
+  HMAC-seals the root, so anyone holding the key can *detect* edits (including
+  to runs they did not execute) — detection, not prevention.
 - **Python embedding** (`intentflow.load(...).run(...)`): load, validate,
   compile, inspect, and run goals/pipelines from Python, and register Python
   functions as governed actions — they still execute through the action gate.

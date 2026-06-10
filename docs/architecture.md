@@ -145,9 +145,10 @@ Three mechanisms keep the runtime honest beyond the plan:
   model's opinion. Without a judge, judged rules are recorded as *skipped*.
 - **Hash-chained traces** (`runtime.Trace`). Each event stores
   ``sha256(prev_hash || canonical(event))``; the auditor recomputes the chain
-  from genesis, so an altered, deleted, or reordered event is caught
-  *standalone* — no plan required. ``--sign-trace`` adds an HMAC seal over the
-  root for key-holder provenance.
+  from genesis, catching accidental corruption, truncation, or reordering with
+  no plan required. The links live in the trace, so the bare chain is integrity,
+  not authenticity — a forger could recompute it. ``--sign-trace`` HMAC-seals
+  the root out of band, so a key holder can *detect* (not prevent) edits.
 
 ### Embedding (`api.py`)
 

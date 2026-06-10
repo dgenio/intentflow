@@ -72,3 +72,19 @@ def test_parse_model_json_clamps_and_filters_citations() -> None:
     hyp = proposal.hypotheses[0]
     assert hyp.raw_confidence == 1.0  # clamped into [0, 1]
     assert hyp.citations == ["E1"]  # E99 dropped (never collected)
+
+
+def test_parse_model_json_normalizes_nonlist_citations() -> None:
+    evidence = [{"id": "E1"}]
+    # A model returning a bare string must not be iterated character-by-character.
+    string_cite = parse_model_json(
+        '{"hypotheses": [{"statement": "x", "confidence": 0.5, "citations": "E1"}]}',
+        evidence,
+    )
+    assert string_cite.hypotheses[0].citations == ["E1"]
+    # null / missing citations normalize to an empty list.
+    null_cite = parse_model_json(
+        '{"hypotheses": [{"statement": "x", "confidence": 0.5, "citations": null}]}',
+        evidence,
+    )
+    assert null_cite.hypotheses[0].citations == []

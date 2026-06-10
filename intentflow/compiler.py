@@ -35,6 +35,8 @@ _MAX_TOKENS_RE = re.compile(r"^max_tokens\s+(\d+)$")
 #: ``check <metric> <op> <number>`` — a machine-checkable verification rule
 #: evaluated by the runtime against structured state (e.g. confidence).
 _CHECK_RE = re.compile(r"^check\s+([a-z_]+)\s*(<=|>=|<|>|==)\s*([0-9]*\.?[0-9]+)$")
+#: Whole-word citation verbs, so "explicit"/"implicit"/"solicit" do not match.
+_CITE_RE = re.compile(r"\bcit(?:e|es|ed|ing|ation|ations)\b")
 
 #: Verbs that suggest an action mutates the outside world (shared with the
 #: linter and the compiler's risk profiler).
@@ -159,7 +161,7 @@ def classify_verification(description: str) -> dict[str, str]:
             "value": float(value),
             "mode": "machine",
         }
-    if "cit" in text:  # cite / citation / citations
+    if _CITE_RE.search(text):  # cite / cites / cited / citation(s)
         return {"kind": "cites_evidence", "mode": "machine"}
     if "rollback" in text:
         return {"kind": "requires_phrase", "arg": "rollback", "mode": "machine"}
