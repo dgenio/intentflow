@@ -1,16 +1,18 @@
-"""Compiler tests: plan shape, action governance, uncertainty extraction,
-and semantic validation."""
+"""Compiler tests: plan shape, typed output schema, risk profile, prompt
+plan, and verification classification."""
 
 from __future__ import annotations
 
 import pytest
 
 from intentflow.compiler import (
+    PLAN_VERSION,
     CompileError,
+    classify_verification,
     compile_goal,
     compile_program,
     extract_uncertainty,
-    validate_program,
+    parse_output_field,
 )
 from intentflow.parser import parse_file, parse_source
 
@@ -18,77 +20,127 @@ PLAN_KEYS = {
     "plan_version",
     "goal",
     "objective",
+    "metadata",
     "context_policy",
-    "evidence",
-    "actions",
+    "evidence_policy",
+    "action_policy",
     "model_directives",
-    "verification",
+    "verification_policy",
     "uncertainty_policy",
     "calibration",
-    "outputs",
+    "output_schema",
     "risk_profile",
     "trace_policy",
     "prompt_plan",
+    "execution_phases",
 }
 
 
 @pytest.fixture()
-def diagnose_plan() -> dict:
-    program = parse_file("examples/diagnose.iflow")
+def triage_plan() -> dict:
+    program = parse_file("examples/opensource_triage.iflow")
     return compile_goal(program.goals[0], program.source_name).to_dict()
 
 
-def test_plan_has_expected_shape(diagnose_plan: dict) -> None:
-    assert set(diagnose_plan) == PLAN_KEYS
-    assert diagnose_plan["goal"] == "DiagnoseProductionIssue"
-    assert "root cause" in diagnose_plan["objective"]
-    assert diagnose_plan["outputs"] == [
-        "root_cause",
-        "confidence",
-        "recommended_fix",
-        "risk",
-    ]
-    assert diagnose_plan["trace_policy"]["enabled"] is True
+def test_plan_has_expected_shape(triage_plan: dict) -> None:
+    assert set(triage_plan) == PLAN_KEYS
+    assert triage_plan["plan_version"] == PLAN_VERSION
+    assert triage_plan["goal"] == "TriageGitHubIssue"
+    assert "triage" in triage_plan["objective"]
+    assert triage_plan["trace_policy"]["enabled"] is True
 
 
-def test_evidence_stances_are_separated(diagnose_plan: dict) -> None:
-    assert diagnose_plan["evidence"]["required"] == ["logs", "config", "recent_commits"]
-    assert diagnose_plan["evidence"]["distrusted"] == ["speculation_without_sources"]
+def test_document_has_versioning_and_source_hash() -> None:
+    program = parse_file("examples/opensource_triage.iflow")
+    document = compile_program(program)
+    assert document["plan_version"] == PLAN_VERSION
+    assert document["intentflow_version"]
+    assert len(document["source_hash"]) == 64
+    assert document["source"].endswith("opensource_triage.iflow")
+    assert len(document["goals"]) == 1
 
 
-def test_approval_gated_actions(diagnose_plan: dict) -> None:
-    assert diagnose_plan["actions"]["allowed"] == ["read_logs", "inspect_code"]
-    assert diagnose_plan["actions"]["approval_required"] == ["deploy_change"]
-    assert diagnose_plan["actions"]["denied"] == []
+def test_compile_is_stable() -> None:
+    program = parse_file("examples/opensource_triage.iflow")
+    assert compile_program(program) == compile_program(program)
 
 
-def test_context_policy(diagnose_plan: dict) -> None:
-    assert diagnose_plan["context_policy"] == {
-        "max_tokens": 12000,
-        "prefer": ["recent_logs"],
-        "preserve": ["user_decisions"],
-    }
+def test_evidence_policy_separates_stances(triage_plan: dict) -> None:
+    policy = triage_plan["evidence_policy"]
+    assert policy["required"] == ["issue_body", "comments", "repo_context"]
+    assert policy["optional"] == ["related_issues"]
+    assert policy["distrusted"] == ["unsupported_claims"]
+
+
+def test_action_policy_groups_modes(triage_plan: dict) -> None:
+    policy = triage_plan["action_policy"]
+    assert policy["allowed"] == ["read_issue", "search_repo", "draft_comment"]
+    assert policy["approval_required"] == ["post_comment"]
+    assert policy["denied"] == ["close_issue"]
+
+
+def test_metadata_is_lowered(triage_plan: dict) -> None:
+    assert triage_plan["metadata"]["description"] == "governed open-source issue triage"
+    assert triage_plan["metadata"]["owner"] == "maintainers"
+
+
+def test_output_schema_is_typed(triage_plan: dict) -> None:
+    fields = {f["name"]: f for f in triage_plan["output_schema"]["fields"]}
+    assert fields["summary"]["base"] == "string"
+    assert fields["likely_cause"]["optional"] is True
+    assert fields["confidence"]["base"] == "number"
+    assert fields["suggested_response"]["base"] == "markdown"
+    assert fields["proposed_labels"]["base"] == "list"
+    assert fields["proposed_labels"]["item_type"] == "string"
+
+
+def test_output_field_parsing_covers_all_types() -> None:
+    for type_text, base, item, optional in [
+        ("string", "string", None, False),
+        ("string?", "string", None, True),
+        ("number", "number", None, False),
+        ("boolean?", "boolean", None, True),
+        ("markdown", "markdown", None, False),
+        ("list[string]", "list", "string", False),
+        ("list[number]", "list", "number", False),
+        ("object?", "object", None, True),
+    ]:
+        field = parse_output_field(f"x: {type_text}", 1)
+        assert (field.base, field.item_type, field.optional) == (base, item, optional)
+
+
+def test_invalid_output_type_is_a_compile_error() -> None:
+    with pytest.raises(CompileError, match="invalid output type"):
+        parse_output_field("x: blob", 3)
+
+
+def test_bare_output_field_defaults_to_string() -> None:
+    field = parse_output_field("answer", 1)
+    assert field.type == "string" and field.base == "string"
 
 
 def test_uncertainty_rule_extraction() -> None:
-    program = parse_file("examples/diagnose.iflow")
+    program = parse_file("examples/opensource_triage.iflow")
     rules = extract_uncertainty(program.goals[0])
-    assert len(rules) == 2
+    assert len(rules) == 3
     threshold = rules[0]
-    assert threshold.kind == "threshold"
-    assert threshold.metric == "confidence"
-    assert threshold.op == "<"
-    assert threshold.threshold == 0.7
-    assert threshold.action == "ask_human"
-    symbolic = rules[1]
-    assert symbolic.kind == "symbolic"
-    assert symbolic.condition == "competing_hypotheses remain"
-    assert symbolic.action == "run_discriminating_test"
+    assert threshold.condition.kind == "threshold"
+    assert threshold.condition.metric == "confidence"
+    assert threshold.condition.op == "<"
+    assert threshold.condition.threshold == 0.65
+    assert threshold.action.name == "ask_human"
+    assert threshold.action.primitive is True
+    signal = rules[1]
+    assert signal.condition.kind == "signal"
+    assert signal.condition.signal == "missing_evidence"
+    block = rules[2]
+    assert block.condition.signal == "security_risk"
+    assert block.action.name == "block_action"
 
 
-def test_prompt_plan_is_staged(diagnose_plan: dict) -> None:
-    phases = [step["phase"] for step in diagnose_plan["prompt_plan"]]
-    assert phases == [
+def test_prompt_plan_is_staged(triage_plan: dict) -> None:
+    blocks = triage_plan["prompt_plan"]["blocks"]
+    assert [b["phase"] for b in blocks] == [
         "system",
         "objective",
         "evidence",
@@ -98,41 +150,69 @@ def test_prompt_plan_is_staged(diagnose_plan: dict) -> None:
         "uncertainty",
         "output",
     ]
-    blocks = {step["phase"]: step["instruction"] for step in diagnose_plan["prompt_plan"]}
-    # approval gating is a visible, separate block in the compiled interaction
-    assert "deploy_change" in blocks["actions_allowed"]
-    assert diagnose_plan["prompt_plan"][0]["role"] == "system"
+    by_phase = {b["phase"]: b["instruction"] for b in blocks}
+    assert "post_comment" in by_phase["actions_allowed"]
+    assert "close_issue" in by_phase["actions_denied"]
+    assert "proposed_labels (list[string])" in by_phase["output"]
+    assert blocks[0]["role"] == "system"
 
 
-def test_risk_profile_is_part_of_the_plan(diagnose_plan: dict) -> None:
-    risk = diagnose_plan["risk_profile"]
-    # deploy_change is approval-gated -> medium risk, requires human approval
+def test_execution_phases_are_embedded(triage_plan: dict) -> None:
+    assert triage_plan["execution_phases"][0] == "parse"
+    assert triage_plan["execution_phases"][-1] == "trace"
+    assert "verify_output" in triage_plan["execution_phases"]
+
+
+def test_risk_profile_medium_for_gated_side_effects(triage_plan: dict) -> None:
+    risk = triage_plan["risk_profile"]
     assert risk["level"] == "medium"
-    assert risk["requires_human_approval"] is True
-    assert risk["approval_gated_actions"] == ["deploy_change"]
+    assert risk["approval_required"] == ["post_comment"]
+    assert risk["blocked_actions"] == ["close_issue"]
+    assert "post_comment" in risk["side_effect_actions"]
+
+
+def test_risk_profile_high_for_ungated_side_effects() -> None:
+    program = parse_file("examples/high_risk_deploy.iflow")
+    plan = compile_goal(program.goals[0], program.source_name).to_dict()
+    risk = plan["risk_profile"]
+    assert risk["level"] == "high"
+    assert any("deploy_change" in c for c in risk["missing_safety_controls"])
+
+
+def test_risk_profile_low_for_read_only_goals() -> None:
+    src = (
+        "goal G {\n  objective:\n    x\n"
+        "  evidence:\n    require logs\n    require config\n"
+        "  actions:\n    allow read_logs\n"
+        "  verify:\n    require cites_evidence\n"
+        "  uncertainty:\n    if confidence < 0.5 ask_human\n"
+        "  output:\n    answer: string\n    confidence: number\n}\n"
+    )
+    plan = compile_goal(parse_source(src).goals[0]).to_dict()
+    assert plan["risk_profile"]["level"] == "low"
+    assert plan["risk_profile"]["missing_safety_controls"] == []
 
 
 def test_citation_classifier_matches_only_whole_words() -> None:
-    from intentflow.compiler import classify_verification
-
-    # whole-word citation verbs -> machine cites_evidence check
     for rule in ("each claim must cite a source", "require citations",
                  "every finding is cited"):
         assert classify_verification(rule)["kind"] == "cites_evidence", rule
-    # words that merely contain "cit" must NOT be treated as citation checks
     for rule in ("be explicit about assumptions", "keep implicit state visible",
                  "do not solicit private data"):
         assert classify_verification(rule)["kind"] == "judged", rule
 
 
+def test_named_require_checks_classify() -> None:
+    assert classify_verification("require cites_evidence") == {
+        "kind": "cites_evidence", "mode": "machine",
+    }
+    judged = classify_verification("require maintainer_safe_tone")
+    assert judged["mode"] == "judged"
+    assert judged["name"] == "maintainer_safe_tone"
+
+
 def test_threshold_check_verification_is_machine_checkable() -> None:
-    source = (
-        "goal G {\n  objective:\n    x\n"
-        "  verify:\n    check confidence >= 0.7\n"
-        "  output:\n    answer\n}\n"
-    )
-    plan = compile_goal(parse_source(source).goals[0]).to_dict()
-    check = plan["verification"][0]["check"]
+    check = classify_verification("check confidence >= 0.7")
     assert check == {
         "kind": "threshold_check",
         "metric": "confidence",
@@ -142,99 +222,45 @@ def test_threshold_check_verification_is_machine_checkable() -> None:
     }
 
 
-def test_verification_rules_get_ids_and_typed_checks(diagnose_plan: dict) -> None:
-    ids = [rule["id"] for rule in diagnose_plan["verification"]]
-    assert ids == ["V1", "V2"]
-    checks = [rule["check"] for rule in diagnose_plan["verification"]]
-    assert checks[0] == {"kind": "cites_evidence", "mode": "machine"}
-    assert checks[1] == {"kind": "requires_phrase", "arg": "rollback", "mode": "machine"}
+def test_verification_rules_get_ids_and_typed_checks(triage_plan: dict) -> None:
+    rules = triage_plan["verification_policy"]["rules"]
+    assert [r["rule_id"] for r in rules] == ["V1", "V2", "V3", "V4"]
+    assert rules[0]["check"]["kind"] == "cites_evidence"
+    assert rules[1]["check"]["mode"] == "judged"
+    assert rules[3]["check"]["kind"] == "threshold_check"
 
 
-def test_judged_verification_rules_are_marked() -> None:
-    program = parse_file("examples/research_question.iflow")
-    plan = compile_goal(program.goals[0], program.source_name).to_dict()
-    modes = {rule["rule"]: rule["check"]["mode"] for rule in plan["verification"]}
-    assert modes["conflicting sources must be reported not hidden"] == "judged"
+def test_calibration_policy_is_part_of_the_plan(triage_plan: dict) -> None:
+    assert triage_plan["calibration"]["method"] == "shrinkage"
 
 
-def test_calibration_policy_is_part_of_the_plan(diagnose_plan: dict) -> None:
-    assert diagnose_plan["calibration"]["method"] == "shrinkage"
-
-
-def test_compile_program_wraps_all_goals() -> None:
-    program = parse_file("examples/code_review.iflow")
-    document = compile_program(program)
-    assert document["source"].endswith("code_review.iflow")
-    assert len(document["plans"]) == 1
-
-
-def test_missing_objective_fails_compilation() -> None:
-    program = parse_source("goal G {\n  output:\n    result\n}\n")
-    with pytest.raises(CompileError, match="no objective"):
+def test_missing_objective_fails_compilation_with_code() -> None:
+    program = parse_source("goal G {\n  output:\n    result: string\n}\n")
+    with pytest.raises(CompileError, match="IFLOW001"):
         compile_goal(program.goals[0])
+
+
+def test_conflicting_action_policies_fail_compilation() -> None:
+    source = (
+        "goal G {\n  objective:\n    x\n"
+        "  actions:\n    allow deploy\n    deny deploy\n"
+        "  output:\n    a: string\n}\n"
+    )
+    with pytest.raises(CompileError, match="IFLOW006"):
+        compile_goal(parse_source(source).goals[0])
 
 
 def test_unknown_action_mode_is_a_compile_error() -> None:
     source = "goal G {\n  objective:\n    x\n  actions:\n    permit read_logs\n}\n"
-    program = parse_source(source)
     with pytest.raises(CompileError, match="unknown action mode 'permit'") as exc_info:
-        compile_goal(program.goals[0])
+        compile_goal(parse_source(source).goals[0])
     assert exc_info.value.line == 5
 
 
-def test_conflicting_action_policies_are_an_error() -> None:
+def test_malformed_uncertainty_rule_is_a_compile_error() -> None:
     source = (
         "goal G {\n  objective:\n    x\n"
-        "  actions:\n    allow deploy\n    deny deploy\n}\n"
+        "  uncertainty:\n    whenever unsure panic\n  output:\n    a: string\n}\n"
     )
-    diagnostics = validate_program(parse_source(source))
-    errors = [d for d in diagnostics if d.level == "error"]
-    assert any("conflicting policies for action 'deploy'" in d.message for d in errors)
-
-
-def test_confidence_threshold_out_of_range_is_an_error() -> None:
-    source = (
-        "goal G {\n  objective:\n    x\n"
-        "  uncertainty:\n    if confidence < 1.5 ask_human\n}\n"
-    )
-    diagnostics = validate_program(parse_source(source))
-    assert any("out of range" in d.message for d in diagnostics if d.level == "error")
-
-
-def test_missing_evidence_and_verify_produce_warnings() -> None:
-    source = "goal G {\n  objective:\n    x\n  output:\n    result\n}\n"
-    diagnostics = validate_program(parse_source(source))
-    warnings = {d.message for d in diagnostics if d.level == "warning"}
-    assert any("no evidence requirements" in w for w in warnings)
-    assert any("no verification rules" in w for w in warnings)
-
-
-def test_examples_validate_cleanly() -> None:
-    for name in ("diagnose", "code_review", "research_question",
-                 "incident_pipeline", "triage_issue"):
-        diagnostics = validate_program(parse_file(f"examples/{name}.iflow"))
-        assert not [d for d in diagnostics if d.level == "error"], name
-
-
-def test_undeclared_uncertainty_action_is_a_warning() -> None:
-    # 'reboot_server' is neither an escalation primitive nor an allowed action.
-    source = (
-        "goal G {\n  objective:\n    x\n"
-        "  uncertainty:\n    if confidence < 0.5 reboot_server\n"
-        "  output:\n    result\n}\n"
-    )
-    diagnostics = validate_program(parse_source(source))
-    assert any(
-        d.level == "warning" and "reboot_server" in d.message for d in diagnostics
-    )
-
-
-def test_allowed_uncertainty_action_is_not_warned() -> None:
-    source = (
-        "goal G {\n  objective:\n    x\n"
-        "  actions:\n    allow run_canary\n"
-        "  uncertainty:\n    if confidence < 0.5 run_canary\n"
-        "  output:\n    result\n}\n"
-    )
-    diagnostics = validate_program(parse_source(source))
-    assert not any("run_canary" in d.message for d in diagnostics)
+    with pytest.raises(CompileError, match="malformed uncertainty rule"):
+        compile_goal(parse_source(source).goals[0])

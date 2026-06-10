@@ -10,11 +10,11 @@ from intentflow.runtime import run_pipeline
 
 GOAL_A = (
     "goal A {\n  objective:\n    find x\n  evidence:\n    require logs\n"
-    "  output:\n    root_cause\n}\n"
+    "  output:\n    root_cause: string\n}\n"
 )
 GOAL_B_TEMPLATE = (
     "goal B {{\n  objective:\n    fix x\n  evidence:\n    require {req}\n"
-    "  output:\n    recommended_fix\n}}\n"
+    "  output:\n    recommended_fix: string\n}}\n"
 )
 
 
@@ -52,11 +52,11 @@ def test_pipeline_missing_output_field_is_a_compile_error() -> None:
 def test_pipeline_wrong_stage_order_is_a_compile_error() -> None:
     source = GOAL_A + GOAL_B_TEMPLATE.format(req="A.root_cause")
     source += "pipeline P {\n  stage B\n  stage A\n}\n"
-    with pytest.raises(CompileError, match="does not run before"):
+    with pytest.raises(CompileError, match="does not run before it"):
         compile_program(parse_source(source))
 
 
-def test_example_pipeline_compiles() -> None:
+def test_pipelines_compile_into_the_document() -> None:
     document = compile_program(parse_file("examples/incident_pipeline.iflow"))
     assert document["pipelines"] == [
         {"name": "IncidentResponse", "stages": ["DiagnoseIncident", "ProposeRemediation"]}
@@ -85,3 +85,18 @@ def test_pipeline_combined_trace_tags_stages() -> None:
     result = run_pipeline(document, "IncidentResponse", printer=None)
     stages_in_trace = {event["stage"] for event in result["trace"]}
     assert stages_in_trace == {"DiagnoseIncident", "ProposeRemediation"}
+
+
+def test_pipeline_stops_at_first_non_completed_stage() -> None:
+    # Stage A escalates (confidence 0.676 < 0.9): stage B must not run.
+    source = (
+        "goal A {\n  objective:\n    find x\n  evidence:\n    require logs\n"
+        "  uncertainty:\n    if confidence < 0.9 ask_human\n"
+        "  output:\n    root_cause: string\n}\n"
+        + GOAL_B_TEMPLATE.format(req="A.root_cause")
+        + "pipeline P {\n  stage A\n  stage B\n}\n"
+    )
+    document = compile_program(parse_source(source))
+    result = run_pipeline(document, "P", printer=None)
+    assert result["status"] == "needs_human"
+    assert [s["goal"] for s in result["stages"]] == ["A"]

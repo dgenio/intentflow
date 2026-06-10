@@ -101,7 +101,7 @@ def test_runtime_uses_approver_for_gated_evidence_tool() -> None:
         "goal G {\n  objective:\n    x\n"
         "  evidence:\n    require logs\n"
         "  actions:\n    require_approval read_logs\n"
-        "  output:\n    answer\n}\n"
+        "  output:\n    answer: string\n}\n"
     )
     plan = compile_goal(parse_source(src).goals[0]).to_dict()
     # Approved: the real tool runs (origin tool:read_logs).
@@ -110,10 +110,12 @@ def test_runtime_uses_approver_for_gated_evidence_tool() -> None:
         approver=PreGrantedApprover({"read_logs"}),
     ).run()
     assert approved["evidence"][0]["origin"] == "tool:read_logs"
-    # Denied: falls back to simulated evidence, denial is traced.
+    # Denied: the evidence is NOT collected (no simulated stand-in), the
+    # denial is traced, and the missing_evidence signal is raised.
     denied = GoalRuntime(
         plan, printer=None, workspace="examples/workspace",
         approver=PreGrantedApprover(set()),
     ).run()
-    assert denied["evidence"][0]["origin"] == "simulated"
+    assert denied["evidence"] == []
+    assert denied["uncertainty"]["signals"]["missing_evidence"] is True
     assert any(e["event"] == "approval_denied" for e in denied["trace"])

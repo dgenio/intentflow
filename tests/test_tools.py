@@ -7,7 +7,7 @@ from pathlib import Path
 import pytest
 
 from intentflow.compiler import compile_goal
-from intentflow.parser import parse_file, parse_source
+from intentflow.parser import parse_file
 from intentflow.runtime import GoalRuntime, Trace
 from intentflow.tools import ActionDenied, ActionGate, ToolRegistry
 
@@ -67,7 +67,7 @@ def test_builtin_registry_reads_workspace_files(tmp_path: Path) -> None:
 
 
 def test_runtime_collects_real_evidence_through_the_gate() -> None:
-    program = parse_file("examples/diagnose.iflow")
+    program = parse_file("examples/production_diagnosis.iflow")
     plan = compile_goal(program.goals[0], program.source_name).to_dict()
     result = GoalRuntime(plan, printer=None, workspace="examples/workspace").run()
     origins = {e["source"]: e["origin"] for e in result["evidence"]}
@@ -76,22 +76,3 @@ def test_runtime_collects_real_evidence_through_the_gate() -> None:
     assert "OOMKilled" in result["evidence"][0]["summary"]
     invoked = [e for e in result["trace"] if e["event"] == "tool_invoked"]
     assert {e["detail"]["action"] for e in invoked} == {"read_logs", "inspect_code"}
-
-
-def test_runtime_blocks_tool_when_action_not_allowed() -> None:
-    # Goal requires logs as evidence but never allows read_logs: the gate
-    # must block the tool and the runtime must fall back to simulation.
-    source = (
-        "goal Locked {\n"
-        "  objective:\n    diagnose without log access\n"
-        "  evidence:\n    require logs\n"
-        "  actions:\n    allow inspect_code\n"
-        "  output:\n    root_cause\n"
-        "}\n"
-    )
-    program = parse_source(source)
-    plan = compile_goal(program.goals[0]).to_dict()
-    result = GoalRuntime(plan, printer=None, workspace="examples/workspace").run()
-    assert result["evidence"][0]["origin"] == "simulated"
-    blocked = [e for e in result["trace"] if e["event"] == "action_blocked"]
-    assert blocked and blocked[0]["detail"]["action"] == "read_logs"

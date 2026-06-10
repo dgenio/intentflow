@@ -5,12 +5,9 @@ from __future__ import annotations
 
 import json
 
-import pytest
-
 from intentflow.auditor import audit_document
 from intentflow.backends import (
     Cassette,
-    CassetteMiss,
     RecordingBackend,
     ReplayBackend,
     make_backend,
@@ -24,6 +21,7 @@ class _FakeProvider:
     """Stands in for a real OpenAI/Anthropic backend (has .complete)."""
 
     name = "fake"
+    model_name = "fake-model"
 
     def __init__(self) -> None:
         self.calls = 0
@@ -32,22 +30,26 @@ class _FakeProvider:
         self.calls += 1
         return json.dumps(
             {
-                "hypotheses": [
-                    {"statement": "OOM", "confidence": 0.82, "citations": ["E1"]}
-                ],
-                "proposed_fix": "raise limit. Rollback: revert.",
+                "output": {
+                    "root_cause": "OOM from unbounded retry queue",
+                    "confidence": 0.82,
+                    "recommended_fix": "cap the queue. Rollback: revert.",
+                    "risk": "low",
+                },
+                "confidence": 0.82,
+                "citations": ["E1"],
             }
         )
 
 
 def _doc():
-    return compile_program(parse_file("examples/diagnose.iflow"))
+    return compile_program(parse_file("examples/production_diagnosis.iflow"))
 
 
 def test_record_then_replay_is_symmetric(tmp_path) -> None:
     cpath = tmp_path / "diagnose.cassette.json"
     doc = _doc()
-    plan = doc["plans"][0]
+    plan = doc["goals"][0]
 
     provider = _FakeProvider()
     rec = RecordingBackend(provider, Cassette.load(cpath))
@@ -60,13 +62,14 @@ def test_record_then_replay_is_symmetric(tmp_path) -> None:
     replayed = GoalRuntime(plan, backend=replay, printer=None,
                            workspace="examples/workspace").run()
     assert replayed["outputs"] == recorded["outputs"]
+    assert replayed["status"] == recorded["status"]
     assert audit_document(doc, replayed)["conformant"] is True
 
 
 def test_recording_backend_does_not_recall_provider_on_replay(tmp_path) -> None:
     cpath = tmp_path / "c.json"
     doc = _doc()
-    plan = doc["plans"][0]
+    plan = doc["goals"][0]
     provider = _FakeProvider()
     backend = RecordingBackend(provider, Cassette.load(cpath))
     GoalRuntime(plan, backend=backend, printer=None, workspace="examples/workspace").run()
@@ -74,15 +77,18 @@ def test_recording_backend_does_not_recall_provider_on_replay(tmp_path) -> None:
     assert provider.calls == 1  # second run served from the cassette
 
 
-def test_replay_miss_raises(tmp_path) -> None:
+def test_replay_miss_is_a_backend_error_status(tmp_path) -> None:
     cpath = tmp_path / "empty.json"
     backend = ReplayBackend(Cassette.load(cpath))
-    plan = _doc()["plans"][0]
-    with pytest.raises(CassetteMiss):
-        GoalRuntime(plan, backend=backend, printer=None).run()
+    plan = _doc()["goals"][0]
+    result = GoalRuntime(plan, backend=backend, printer=None).run()
+    assert result["status"] == "backend_error"
+    assert "no recorded reply" in result["backend_error"]
 
 
 def test_make_backend_replay_requires_cassette() -> None:
+    import pytest
+
     with pytest.raises(ValueError, match="requires a cassette"):
         make_backend("replay")
 

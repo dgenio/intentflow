@@ -1,134 +1,266 @@
-"""Runtime simulation tests: phases, uncertainty handling, verification,
-escalation, and the auditable trace."""
+"""Runtime tests: the 13-phase machine, run statuses, verification behavior,
+uncertainty control flow, and the auditable trace."""
 
 from __future__ import annotations
 
 import pytest
 
-from intentflow.compiler import compile_goal
+from intentflow.backends import MockBackend
+from intentflow.compiler import EXECUTION_PHASES, compile_goal
 from intentflow.parser import parse_file, parse_source
-from intentflow.runtime import SimulationRuntime
+from intentflow.runtime import GoalRuntime, execute_program
+
+TRIAGE = "examples/opensource_triage.iflow"
 
 
-def _run_example(name: str) -> dict:
-    program = parse_file(f"examples/{name}.iflow")
-    plan = compile_goal(program.goals[0], program.source_name).to_dict()
-    return SimulationRuntime(plan, printer=None).run()
+def _plan(path_or_source: str) -> dict:
+    if path_or_source.endswith(".iflow"):
+        program = parse_file(path_or_source)
+    else:
+        program = parse_source(path_or_source)
+    return compile_goal(program.goals[0], program.source_name).to_dict()
 
 
-@pytest.fixture()
-def diagnose_result() -> dict:
-    return _run_example("diagnose")
+def _run(path_or_source: str, **kwargs) -> dict:
+    return GoalRuntime(_plan(path_or_source), printer=None, **kwargs).run()
 
 
-def test_simulation_completes_with_structured_outputs(diagnose_result: dict) -> None:
-    assert diagnose_result["status"] == "completed"
-    assert set(diagnose_result["outputs"]) == {
-        "root_cause",
-        "confidence",
-        "recommended_fix",
-        "risk",
-    }
-    assert 0.0 <= diagnose_result["outputs"]["confidence"] <= 1.0
+@pytest.fixture(scope="module")
+def triage_result() -> dict:
+    return GoalRuntime(_plan(TRIAGE), printer=None).run()
 
 
-def test_trace_covers_all_phases(diagnose_result: dict) -> None:
-    phases = {event["phase"] for event in diagnose_result["trace"]}
-    assert {"init", "context", "evidence", "actions", "model",
-            "uncertainty", "verify", "output", "done"} <= phases
-    seqs = [event["seq"] for event in diagnose_result["trace"]]
-    assert seqs == sorted(seqs)  # append-only, ordered
+# -- statuses ---------------------------------------------------------------
 
 
-def test_evidence_is_collected_for_required_sources(diagnose_result: dict) -> None:
-    sources = [e["source"] for e in diagnose_result["evidence"]]
-    assert sources == ["logs", "config", "recent_commits"]
-    assert all(e["id"].startswith("E") for e in diagnose_result["evidence"])
+def test_flagship_example_completes(triage_result: dict) -> None:
+    assert triage_result["status"] == "completed"
+    assert triage_result["verification"]["passed"] is True
+    assert triage_result["escalations"] == []
 
 
-def test_confidence_is_calibrated_before_rules_fire(diagnose_result: dict) -> None:
-    top = diagnose_result["hypotheses"][0]
-    assert top["raw_confidence"] == 0.68
-    # shrinkage toward 0.5 with factor 0.8 (then boosted by the
-    # discriminating test, which the next tests cover)
-    assert top["confidence"] != top["raw_confidence"]
+def test_needs_human_when_confidence_below_threshold() -> None:
+    # production_diagnosis declares `if confidence < 0.7 ask_human`; the
+    # simulator's calibrated confidence is 0.676.
+    result = _run("examples/production_diagnosis.iflow")
+    assert result["status"] == "needs_human"
+    assert result["escalations"]
+    assert "confidence" in result["escalations"][0]["reason"]
 
 
-def test_low_confidence_triggers_human_escalation(diagnose_result: dict) -> None:
-    # Mock raw 0.68 calibrates to 0.644, below the declared 0.7 threshold.
-    assert diagnose_result["escalations"], "expected ask_human escalation"
-    assert "threshold" in diagnose_result["escalations"][0]["question"]
-    events = [e["event"] for e in diagnose_result["trace"]]
-    assert "human_escalation" in events
+def test_blocked_when_security_risk_rule_fires() -> None:
+    # high_risk_deploy allows deploy_change ungated -> risk profile high ->
+    # `if security_risk block_action` fires.
+    result = _run("examples/high_risk_deploy.iflow")
+    assert result["status"] == "blocked"
+    events = [e["event"] for e in result["trace"]]
+    assert "action_blocked_by_policy" in events
 
 
-def test_competing_hypotheses_trigger_discriminating_test(diagnose_result: dict) -> None:
-    events = [e["event"] for e in diagnose_result["trace"]]
-    assert "discriminating_test" in events
-    # The test separates the top two hypotheses, raising the winner.
-    top = diagnose_result["hypotheses"][0]
-    assert top["confidence"] > 0.7
+def test_backend_error_when_backend_raises() -> None:
+    result = _run(TRIAGE, backend=MockBackend(RuntimeError("provider down")))
+    assert result["status"] == "backend_error"
+    assert "provider down" in result["backend_error"]
+    assert result["outputs"] == {}
 
 
-def test_verification_checks_citations_and_rollback(diagnose_result: dict) -> None:
-    verification = diagnose_result["verification"]
-    assert verification["passed"] is True
-    statuses = {c["rule"]: c["status"] for c in verification["checks"]}
-    assert statuses["each hypothesis must cite evidence"] == "pass"
-    assert statuses["proposed fix must include rollback path"] == "pass"
+def test_backend_error_when_reply_is_not_json() -> None:
+    result = _run(TRIAGE, backend=MockBackend("complete gibberish"))
+    assert result["status"] == "backend_error"
+    assert "not a JSON object" in result["backend_error"]
+    phases = {p["name"]: p["status"] for p in result["phases"]}
+    assert phases["parse_output"] == "failed"
+    assert phases["verify_output"] == "skipped"
 
 
-def test_uncited_hypotheses_fail_citation_verification() -> None:
-    # No evidence section: the mock hypothesis cannot cite anything.
-    source = (
-        "goal NoEvidence {\n"
-        "  objective:\n    guess the answer\n"
-        "  verify:\n    each claim must cite evidence\n"
-        "  output:\n    answer\n"
-        "}\n"
+def test_failed_verification_on_low_confidence() -> None:
+    # confidence 0.2 calibrates to 0.26: the `check confidence >= 0.65`
+    # machine check fails AND ask_human fires; blocked/needs_human wins over
+    # failed_verification per the documented precedence.
+    backend = MockBackend(
+        {
+            "output": {
+                "summary": "s", "likely_cause": None, "confidence": 0.2,
+                "suggested_response": "r", "proposed_labels": ["bug"],
+            },
+            "confidence": 0.2,
+            "citations": ["E1"],
+        }
     )
-    program = parse_source(source)
-    plan = compile_goal(program.goals[0]).to_dict()
-    result = SimulationRuntime(plan, printer=None).run()
+    result = _run(TRIAGE, backend=backend)
+    assert result["status"] == "needs_human"
     assert result["verification"]["passed"] is False
-    assert result["verification"]["checks"][0]["status"] == "fail"
 
 
-def test_approval_gated_actions_appear_in_trace(diagnose_result: dict) -> None:
-    governance = [
-        e for e in diagnose_result["trace"] if e["event"] == "governance_established"
-    ]
-    assert governance
-    assert governance[0]["detail"]["approval_required"] == ["deploy_change"]
+def test_failed_verification_is_never_reported_as_completed() -> None:
+    # A goal with a failing machine check but no uncertainty escalation.
+    src = (
+        "goal G {\n  objective:\n    x\n"
+        "  evidence:\n    require logs\n    require config\n"
+        "  verify:\n    require cites_evidence\n"
+        "  output:\n    answer: string\n}\n"
+    )
+    backend = MockBackend(
+        {"output": {"answer": "a"}, "confidence": 0.9, "citations": []}
+    )
+    result = _run(src, backend=backend)
+    assert result["status"] == "failed_verification"
+    checks = {c["rule"]: c["status"] for c in result["verification"]["checks"]}
+    assert checks["require cites_evidence"] == "fail"
 
 
-def test_symbolic_rule_without_simulator_is_recorded() -> None:
-    result = _run_example("research_question")
-    recorded = [
-        e for e in result["trace"] if e["event"] == "rule_not_simulated"
-    ]
-    assert any("conflicting_sources" in e["detail"]["condition"] for e in recorded)
+def test_failed_validation_via_execute_program() -> None:
+    program = parse_source("goal G {\n  output:\n    a: string\n}\n")
+    result = execute_program(program)
+    assert result["status"] == "failed_validation"
+    assert result["backend"] is None
+    assert any(d["code"] == "IFLOW001" for d in result["diagnostics"])
+    assert [p["name"] for p in result["phases"]] == ["parse", "analyze"]
+    assert result["phases"][-1]["status"] == "failed"
 
 
-def test_judged_verification_is_skipped_not_passed() -> None:
-    result = _run_example("research_question")
-    by_rule = {c["rule"]: c for c in result["verification"]["checks"]}
-    judged = by_rule["conflicting sources must be reported not hidden"]
-    assert judged["mode"] == "judged"
-    assert judged["status"] == "skipped"
+def test_execute_program_runs_all_phases() -> None:
+    result = execute_program(parse_file(TRIAGE))
+    assert result["status"] == "completed"
+    assert [p["name"] for p in result["phases"]] == list(EXECUTION_PHASES)
+    assert all(p["status"] == "completed" for p in result["phases"])
+
+
+def test_execute_program_unknown_goal_raises() -> None:
+    with pytest.raises(ValueError, match="unknown goal"):
+        execute_program(parse_file(TRIAGE), "Nope")
+
+
+# -- outputs and schema -------------------------------------------------------
+
+
+def test_outputs_match_typed_schema(triage_result: dict) -> None:
+    outputs = triage_result["outputs"]
+    assert set(outputs) == {
+        "summary", "likely_cause", "confidence", "suggested_response",
+        "proposed_labels",
+    }
+    assert isinstance(outputs["summary"], str)
+    assert isinstance(outputs["proposed_labels"], list)
+    # The declared confidence output carries the *calibrated* value.
+    assert outputs["confidence"] == triage_result["confidence"]["calibrated"]
+
+
+def test_confidence_is_calibrated_before_rules_fire(triage_result: dict) -> None:
+    confidence = triage_result["confidence"]
+    assert confidence["raw"] == 0.72
+    assert confidence["calibrated"] == 0.676  # shrinkage toward 0.5, factor 0.8
+
+
+def test_schema_violation_fails_verification() -> None:
+    backend = MockBackend(
+        {
+            "output": {
+                "summary": 123,  # wrong type
+                "confidence": 0.9,
+                "suggested_response": "r",
+                "proposed_labels": ["a"],
+            },
+            "confidence": 0.9,
+            "citations": ["E1"],
+        }
+    )
+    result = _run(TRIAGE, backend=backend)
+    assert result["status"] == "failed_verification"
+    schema_check = result["verification"]["checks"][0]
+    assert schema_check["id"] == "V0"
+    assert schema_check["status"] == "fail"
+    assert "summary" in schema_check["note"]
+
+
+def test_missing_optional_field_is_filled_with_null() -> None:
+    backend = MockBackend(
+        {
+            "output": {
+                "summary": "s", "confidence": 0.9,
+                "suggested_response": "r", "proposed_labels": ["a"],
+                # likely_cause (string?) omitted on purpose
+            },
+            "confidence": 0.9,
+            "citations": ["E1"],
+        }
+    )
+    result = _run(TRIAGE, backend=backend)
+    assert result["outputs"]["likely_cause"] is None
+    assert result["verification"]["checks"][0]["status"] == "pass"
+
+
+def test_undeclared_output_fields_are_dropped() -> None:
+    backend = MockBackend(
+        {
+            "output": {
+                "summary": "s", "likely_cause": None, "confidence": 0.9,
+                "suggested_response": "r", "proposed_labels": ["a"],
+                "extra_field": "should vanish",
+            },
+            "confidence": 0.9,
+            "citations": ["E1"],
+        }
+    )
+    result = _run(TRIAGE, backend=backend)
+    assert "extra_field" not in result["outputs"]
+    assert any(e["event"] == "extra_fields_dropped" for e in result["trace"])
+
+
+def test_dangling_citations_are_dropped_and_traced() -> None:
+    backend = MockBackend(
+        {
+            "output": {
+                "summary": "s", "likely_cause": None, "confidence": 0.9,
+                "suggested_response": "r", "proposed_labels": ["a"],
+            },
+            "confidence": 0.9,
+            "citations": ["E1", "E99"],
+        }
+    )
+    result = _run(TRIAGE, backend=backend)
+    assert result["citations"] == ["E1"]
+    dropped = [e for e in result["trace"] if e["event"] == "citations_dropped"]
+    assert dropped and dropped[0]["detail"]["citations"] == ["E99"]
+
+
+# -- evidence and signals ------------------------------------------------------
+
+
+def test_evidence_is_collected_for_required_and_optional(triage_result: dict) -> None:
+    sources = [e["source"] for e in triage_result["evidence"]]
+    assert sources == ["issue_body", "comments", "repo_context", "related_issues"]
+    assert all(e["id"].startswith("E") for e in triage_result["evidence"])
+
+
+def test_blocked_evidence_sets_missing_evidence_signal() -> None:
+    # The goal requires logs but does not allow read_logs: with a workspace
+    # in play the gate blocks the tool and the goal does NOT get the data.
+    src = (
+        "goal Locked {\n  objective:\n    diagnose without log access\n"
+        "  evidence:\n    require logs\n    require config\n"
+        "  actions:\n    allow inspect_code\n"
+        "  uncertainty:\n    if missing_evidence ask_human\n"
+        "  output:\n    root_cause: string\n}\n"
+    )
+    result = GoalRuntime(
+        _plan(src), printer=None, workspace="examples/workspace"
+    ).run()
+    assert result["uncertainty"]["signals"]["missing_evidence"] is True
+    assert result["status"] == "needs_human"
+    blocked = [e for e in result["trace"] if e["event"] == "action_blocked"]
+    assert blocked and blocked[0]["detail"]["action"] == "read_logs"
+    # The blocked source is not silently replaced with simulated content.
+    assert [e["source"] for e in result["evidence"]] == ["config"]
 
 
 def test_distrusted_sources_trace_order_is_deterministic() -> None:
-    source = (
-        "goal G {\n"
-        "  objective:\n    x\n"
+    src = (
+        "goal G {\n  objective:\n    x\n"
         "  evidence:\n    require logs\n    distrust b_source\n    distrust a_source\n"
-        "  output:\n    answer\n"
-        "}\n"
+        "  output:\n    answer: string\n}\n"
     )
-    program = parse_source(source)
-    plan = compile_goal(program.goals[0]).to_dict()
-    result = SimulationRuntime(plan, printer=None).run()
+    result = _run(src)
     noted = [
         e["detail"]["source"]
         for e in result["trace"]
@@ -137,7 +269,40 @@ def test_distrusted_sources_trace_order_is_deterministic() -> None:
     assert noted == ["b_source", "a_source"]  # declaration order, not set order
 
 
+# -- trace ---------------------------------------------------------------------
+
+
+def test_trace_covers_all_canonical_phases(triage_result: dict) -> None:
+    started = [
+        e["phase"] for e in triage_result["trace"] if e["event"] == "phase_started"
+    ]
+    assert started == list(EXECUTION_PHASES)
+    seqs = [event["seq"] for event in triage_result["trace"]]
+    assert seqs == sorted(seqs)  # append-only, ordered
+
+
+def test_messages_are_recorded(triage_result: dict) -> None:
+    assert "TriageGitHubIssue" in triage_result["messages"]["system"]
+    assert "Objective:" in triage_result["messages"]["user"]
+    built = [e for e in triage_result["trace"] if e["event"] == "messages_built"]
+    assert built and built[0]["detail"]["system_chars"] > 0
+
+
+def test_backend_response_is_recorded(triage_result: dict) -> None:
+    response = triage_result["backend_response"]
+    assert response["model"] == "intentflow-simulator"
+    assert response["finish_reason"] == "stop"
+
+
+def test_summary_is_flat_and_complete(triage_result: dict) -> None:
+    summary = triage_result["summary"]
+    assert summary["status"] == "completed"
+    assert summary["verification_status"] == "passed"
+    assert summary["uncertainty_status"] == "clear"
+    assert summary["trace_id"] == triage_result["trace_id"]
+
+
 def test_runtime_is_deterministic() -> None:
-    first = _run_example("diagnose")
-    second = _run_example("diagnose")
+    first = _run(TRIAGE)
+    second = _run(TRIAGE)
     assert first == second

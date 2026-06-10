@@ -2,8 +2,9 @@
 
     import intentflow
 
-    program = intentflow.load("examples/diagnose.iflow")
+    program = intentflow.load("examples/opensource_triage.iflow")
     result = program.run(backend="simulate")
+    assert result["status"] == "completed"
 
 You can also register plain Python functions as governed actions — they still
 run *through the action gate*, so a goal that does not allow the action cannot
@@ -21,16 +22,13 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any, Callable
 
+from intentflow.analyzer import Diagnostic, analyze_program
 from intentflow.backends import CognitionBackend, make_backend
-from intentflow.compiler import (
-    Diagnostic,
-    compile_program,
-    inspect_program,
-    validate_program,
-)
+from intentflow.compiler import compile_program, inspect_program
+from intentflow.explain import explain_program
 from intentflow.judges import Judge, make_judge
 from intentflow.parser import Program, parse_file, parse_source
-from intentflow.runtime import GoalRuntime, run_pipeline
+from intentflow.runtime import execute_program, run_pipeline
 from intentflow.tools import Approver, PreGrantedApprover, Tool, ToolRegistry
 
 
@@ -54,13 +52,17 @@ class IntentFlowProgram:
         return [p.name for p in self._program.pipelines]
 
     def validate(self) -> list[Diagnostic]:
-        return validate_program(self._program)
+        """Run the static analyzer; returns coded diagnostics."""
+        return analyze_program(self._program)
 
     def compile(self) -> dict[str, Any]:
         return compile_program(self._program)
 
     def inspect(self) -> dict[str, Any]:
         return inspect_program(self._program)
+
+    def explain(self) -> dict[str, Any]:
+        return explain_program(self._program)
 
     # -- governed Python tools -------------------------------------------
 
@@ -102,22 +104,13 @@ class IntentFlowProgram:
         cassette: str | Path | None = None,
         printer: Callable[[str], None] | None = None,
     ) -> dict[str, Any]:
-        """Compile and run one goal, returning the verified, traced result."""
-        document = self.compile()
-        plans = {p["goal"]: p for p in document["plans"]}
-        if goal is None:
-            if not document["plans"]:
-                raise ValueError("program has no goals to run")
-            plan = document["plans"][0]
-        elif goal in plans:
-            plan = plans[goal]
-        else:
-            raise ValueError(
-                f"unknown goal {goal!r}; available: {sorted(plans)}"
-            )
+        """Run one goal through every canonical phase, returning the traced
+        result. Analyzer errors yield ``status == "failed_validation"``
+        instead of raising."""
         registry = self._registry(workspace)
-        runtime = GoalRuntime(
-            plan,
+        return execute_program(
+            self._program,
+            goal,
             backend=self._backend(backend, cassette),
             printer=printer,
             workspace=None if registry is not None else workspace,
@@ -126,7 +119,6 @@ class IntentFlowProgram:
             registry=registry,
             sign_key=sign_key,
         )
-        return runtime.run()
 
     def run_pipeline(
         self,
@@ -143,15 +135,16 @@ class IntentFlowProgram:
     ) -> dict[str, Any]:
         """Compile and run a named pipeline."""
         document = self.compile()
+        registry = self._registry(workspace)
         return run_pipeline(
             document,
             name,
             backend=self._backend(backend, cassette),
             printer=printer,
-            workspace=None if self._registry(workspace) is not None else workspace,
+            workspace=None if registry is not None else workspace,
             judge=self._judge(judge),
             approver=self._approver(approve, approver),
-            registry=self._registry(workspace),
+            registry=registry,
             sign_key=sign_key,
         )
 

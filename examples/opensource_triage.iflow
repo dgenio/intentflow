@@ -1,0 +1,56 @@
+# Triage an incoming GitHub issue as a governed, maintainer-safe process.
+#
+# This is the flagship example: it demonstrates typed outputs, optional
+# evidence, approval-gated outward actions (posting a comment), an explicitly
+# denied action (closing the issue), machine + judged verification, and
+# uncertainty rules that escalate to a human or block outright.
+#
+# Try:
+#   intentflow validate examples/opensource_triage.iflow
+#   intentflow explain  examples/opensource_triage.iflow
+#   intentflow run      examples/opensource_triage.iflow --trace-dir traces
+goal TriageGitHubIssue {
+  meta:
+    description "governed open-source issue triage"
+    owner "maintainers"
+
+  objective:
+    triage a GitHub issue safely and propose a maintainer-ready response
+
+  context:
+    max_tokens 10000
+    prefer recent_comments
+    preserve maintainer_intent
+
+  evidence:
+    require issue_body
+    require comments
+    require repo_context
+    optional related_issues
+    distrust unsupported_claims
+
+  actions:
+    allow read_issue
+    allow search_repo
+    allow draft_comment
+    require_approval post_comment
+    deny close_issue
+
+  verify:
+    require cites_evidence
+    require maintainer_safe_tone
+    require no_unverified_claims
+    check confidence >= 0.65
+
+  uncertainty:
+    if confidence < 0.65 ask_human
+    if missing_evidence ask_human
+    if security_risk block_action
+
+  output:
+    summary: string
+    likely_cause: string?
+    confidence: number
+    suggested_response: markdown
+    proposed_labels: list[string]
+}

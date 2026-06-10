@@ -1,0 +1,2 @@
+#1841 "Job runner stuck in retry loop" (closed, fixed by capping attempts)
+#1992 "Backoff too aggressive on transient errors" (open)

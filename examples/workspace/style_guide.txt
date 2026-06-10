@@ -1,0 +1,2 @@
+- Retry helpers must preserve the documented attempt count.
+- Timing changes require a linked benchmark or incident reference.

@@ -12,11 +12,13 @@ that the agent stayed inside its envelope:
 * ``T2`` — phases ran in canonical order;
 * ``T3`` — the trace hash chain is intact (tamper-evident standalone) and,
   if sealed/signed, the root and HMAC signature verify;
-* ``E1`` — every hypothesis citation points at collected evidence;
+* ``E1`` — every citation in the result points at collected evidence;
 * ``U1`` — every uncertainty rule in the plan was evaluated or recorded;
 * ``V1`` — every verification rule in the plan was checked, and no failed
   machine check was dropped from the result;
-* ``O1`` — the produced outputs are exactly the declared output contract.
+* ``S1`` — the reported status is consistent with the trace (a failed
+  verification or a human escalation cannot be reported as ``completed``);
+* ``O1`` — the produced outputs match the declared output schema.
 
 Because the auditor needs only the plan (recompiled from source) and the
 result JSON, a third party can verify conformance without trusting the
@@ -31,6 +33,9 @@ from dataclasses import dataclass
 from typing import Any
 
 from intentflow.runtime import CANONICAL_PHASES, GENESIS_HASH, link_hash
+
+#: Statuses for which the run reached verification/uncertainty phases.
+_EXECUTED_STATUSES = ("completed", "needs_human", "blocked", "failed_verification")
 
 
 @dataclass
@@ -102,12 +107,16 @@ def _check_trace_integrity(trace: list[dict[str, Any]]) -> list[Violation]:
             Violation("T1", "trace sequence numbers are not contiguous from 1")
         )
     started = [event["phase"] for event in trace if event["event"] == "phase_started"]
-    expected = [phase for phase in CANONICAL_PHASES if phase in started]
-    if started != expected:
+    deduped: list[str] = []
+    for phase in started:
+        if not deduped or deduped[-1] != phase:
+            deduped.append(phase)
+    expected = [phase for phase in CANONICAL_PHASES if phase in deduped]
+    if deduped != expected:
         violations.append(
             Violation(
                 "T2",
-                f"phases ran out of canonical order: {started} (expected {expected})",
+                f"phases ran out of canonical order: {deduped} (expected {expected})",
             )
         )
     return violations
@@ -117,9 +126,10 @@ def _check_action_governance(
     plan: dict[str, Any], trace: list[dict[str, Any]]
 ) -> list[Violation]:
     violations: list[Violation] = []
-    allowed = set(plan["actions"]["allowed"])
-    gated = set(plan["actions"]["approval_required"])
-    denied = set(plan["actions"]["denied"])
+    policy = plan["action_policy"]
+    allowed = set(policy["allowed"])
+    gated = set(policy["approval_required"])
+    denied = set(policy["denied"])
     granted: set[str] = set()
     for event in trace:
         action = event["detail"].get("action")
@@ -151,18 +161,16 @@ def _check_action_governance(
 
 def _check_evidence_citations(result: dict[str, Any]) -> list[Violation]:
     evidence_ids = {item["id"] for item in result.get("evidence", [])}
-    violations: list[Violation] = []
-    for hyp in result.get("hypotheses", []):
-        dangling = [c for c in hyp.get("citations", []) if c not in evidence_ids]
-        if dangling:
-            violations.append(
-                Violation(
-                    "E1",
-                    f"hypothesis {hyp['id']} cites evidence that was never "
-                    f"collected: {', '.join(dangling)}",
-                )
+    dangling = [c for c in result.get("citations", []) if c not in evidence_ids]
+    if dangling:
+        return [
+            Violation(
+                "E1",
+                "result cites evidence that was never collected: "
+                + ", ".join(dangling),
             )
-    return violations
+        ]
+    return []
 
 
 def _check_uncertainty_coverage(
@@ -171,16 +179,16 @@ def _check_uncertainty_coverage(
     evaluated = {
         event["detail"].get("condition")
         for event in trace
-        if event["event"] in ("rule_evaluated", "rule_not_simulated", "rule_skipped")
+        if event["event"] in ("rule_evaluated", "rule_not_evaluable")
     }
     return [
         Violation(
             "U1",
-            f"uncertainty rule 'if {rule['condition']} {rule['action']}' was "
-            "never evaluated or recorded",
+            f"uncertainty rule 'if {rule['condition']['text']} "
+            f"{rule['action']['name']}' was never evaluated or recorded",
         )
-        for rule in plan["uncertainty_policy"]
-        if rule["condition"] not in evaluated
+        for rule in plan["uncertainty_policy"]["rules"]
+        if rule["condition"]["text"] not in evaluated
     ]
 
 
@@ -193,10 +201,10 @@ def _check_verification_coverage(
         for event in trace
         if event["event"] == "check_evaluated"
     }
-    for rule in plan["verification"]:
-        if rule["id"] not in checked:
+    for rule in plan["verification_policy"]["rules"]:
+        if rule["rule_id"] not in checked:
             violations.append(
-                Violation("V1", f"verification rule {rule['id']} was never checked")
+                Violation("V1", f"verification rule {rule['rule_id']} was never checked")
             )
     failed_in_trace = {
         event["detail"]["id"]
@@ -228,33 +236,79 @@ def _check_verification_coverage(
     return violations
 
 
+def _check_status_consistency(result: dict[str, Any]) -> list[Violation]:
+    status = result.get("status")
+    if status != "completed":
+        return []
+    violations: list[Violation] = []
+    if result.get("verification", {}).get("passed") is False:
+        violations.append(
+            Violation(
+                "S1",
+                "status is 'completed' but verification failed; a failed "
+                "verification may never be reported as success",
+            )
+        )
+    if result.get("escalations"):
+        violations.append(
+            Violation(
+                "S1",
+                "status is 'completed' but the run recorded escalations",
+            )
+        )
+    return violations
+
+
 def _check_output_contract(plan: dict[str, Any], result: dict[str, Any]) -> list[Violation]:
-    declared = list(plan["outputs"])
-    produced = list(result.get("outputs", {}))
-    if produced != declared:
-        return [
+    fields = plan["output_schema"]["fields"]
+    declared = {f["name"] for f in fields}
+    required = {f["name"] for f in fields if not f.get("optional")}
+    produced = set(result.get("outputs", {}))
+    violations: list[Violation] = []
+    undeclared = produced - declared
+    if undeclared:
+        violations.append(
             Violation(
                 "O1",
-                f"outputs {produced} do not match the declared contract {declared}",
+                f"outputs include undeclared fields: {sorted(undeclared)}",
             )
-        ]
-    return []
+        )
+    missing = required - produced
+    if missing and result.get("verification", {}).get("passed"):
+        violations.append(
+            Violation(
+                "O1",
+                f"verification passed but required outputs are missing: "
+                f"{sorted(missing)}",
+            )
+        )
+    return violations
 
 
 def audit_result(
     plan: dict[str, Any], result: dict[str, Any], sign_key: bytes | None = None
 ) -> dict[str, Any]:
     """Audit one goal result against its compiled plan."""
+    status = result.get("status")
+    if status == "failed_validation":
+        return {
+            "goal": plan["goal"],
+            "conformant": True,
+            "violations": [],
+            "note": "run failed validation before execution; nothing to audit",
+        }
     trace = result.get("trace", [])
     violations = (
         _check_trace_integrity(trace)
         + _check_trace_chain(trace, result.get("trace_chain"), sign_key)
         + _check_action_governance(plan, trace)
         + _check_evidence_citations(result)
-        + _check_uncertainty_coverage(plan, trace)
-        + _check_verification_coverage(plan, result, trace)
+        + _check_status_consistency(result)
         + _check_output_contract(plan, result)
     )
+    if status in _EXECUTED_STATUSES:
+        violations += _check_uncertainty_coverage(plan, trace)
+        violations += _check_verification_coverage(plan, result, trace)
     return {
         "goal": plan["goal"],
         "conformant": not violations,
@@ -267,7 +321,7 @@ def audit_document(
 ) -> dict[str, Any]:
     """Audit a result file (single goal or pipeline) against a compiled
     document. Returns an aggregate report."""
-    plans = {plan["goal"]: plan for plan in document["plans"]}
+    plans = {plan["goal"]: plan for plan in document["goals"]}
     if "pipeline" in result:
         reports = []
         for stage in result["stages"]:

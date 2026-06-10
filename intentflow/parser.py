@@ -6,9 +6,13 @@ The grammar is deliberately simple and line-based:
 * ``pipeline Name {`` opens a pipeline of ``stage GoalName`` lines.
 * ``section:`` (e.g. ``evidence:``) opens a section inside a goal.
 * Every other non-empty line inside a section is a statement.
-* ``#`` starts a comment that runs to end of line.
+* ``#`` starts a comment that runs to end of line, except inside a
+  double-quoted string.
 
-All parse errors carry a line number and the source file name.
+All parse errors carry the source file name, a line number, and a column.
+Duplicate *sections* are syntax errors; duplicate *goal names* parse fine and
+are reported by the analyzer (IFLOW016), so tooling can still inspect the
+rest of the file.
 """
 
 from __future__ import annotations
@@ -35,48 +39,85 @@ _SECTION_RE = re.compile(r"^([a-z_]+)\s*:$")
 class ParseError(Exception):
     """A syntax error in an ``.iflow`` source file."""
 
-    def __init__(self, message: str, line: int, source_name: str = "<string>") -> None:
+    def __init__(
+        self,
+        message: str,
+        line: int,
+        source_name: str = "<string>",
+        column: int = 1,
+    ) -> None:
         self.message = message
         self.line = line
+        self.column = column
         self.source_name = source_name
-        super().__init__(f"{source_name}:{line}: {message}")
+        super().__init__(f"{source_name}:{line}:{column}: {message}")
 
 
-def _strip_comment(line: str) -> str:
-    """Remove a ``#`` comment. The language has no string literals, so any
-    ``#`` starts a comment."""
-    idx = line.find("#")
-    if idx != -1:
-        line = line[:idx]
-    return line.rstrip()
+def strip_comment(line: str) -> str:
+    """Remove a ``#`` comment, respecting double-quoted strings.
+
+    ``"`` opens a string in which ``#`` is literal text; ``\\"`` escapes a
+    quote inside a string. An unterminated string simply runs to end of line
+    (statements are line-scoped, so this cannot leak across lines).
+    """
+    if "#" not in line:
+        return line.rstrip()
+    out: list[str] = []
+    in_string = False
+    escaped = False
+    for ch in line:
+        if escaped:
+            out.append(ch)
+            escaped = False
+            continue
+        if in_string and ch == "\\":
+            out.append(ch)
+            escaped = True
+            continue
+        if ch == '"':
+            in_string = not in_string
+            out.append(ch)
+            continue
+        if ch == "#" and not in_string:
+            break
+        out.append(ch)
+    return "".join(out).rstrip()
+
+
+def _column(raw: str) -> int:
+    """1-based column of the first non-whitespace character."""
+    stripped = raw.lstrip()
+    return len(raw) - len(stripped) + 1
 
 
 def parse_source(text: str, source_name: str = "<string>") -> Program:
     """Parse IntentFlow source text into a :class:`Program`."""
-    program = Program(source_name=source_name)
+    program = Program(source_name=source_name, source_text=text)
     current_goal: Goal | None = None
     current_pipeline: Pipeline | None = None
     current_section: Section | None = None
 
     for lineno, raw in enumerate(text.splitlines(), start=1):
-        line = _strip_comment(raw).strip()
+        line = strip_comment(raw).strip()
+        col = _column(raw)
         if not line:
             continue
 
         if current_goal is None and current_pipeline is None:
             match = _GOAL_RE.match(line)
             if match:
-                name = match.group(1)
-                if program.goal(name) is not None:
-                    raise ParseError(f"duplicate goal {name!r}", lineno, source_name)
-                current_goal = Goal(name=name, line=lineno)
+                # Duplicate goal names are an analyzer error (IFLOW016), not a
+                # parse error, so the AST stays inspectable.
+                current_goal = Goal(name=match.group(1), line=lineno, column=col)
                 current_section = None
                 continue
             match = _PIPELINE_RE.match(line)
             if match:
                 name = match.group(1)
                 if program.pipeline(name) is not None:
-                    raise ParseError(f"duplicate pipeline {name!r}", lineno, source_name)
+                    raise ParseError(
+                        f"duplicate pipeline {name!r}", lineno, source_name, col
+                    )
                 current_pipeline = Pipeline(name=name, line=lineno)
                 continue
             if line.startswith("goal"):
@@ -84,18 +125,21 @@ def parse_source(text: str, source_name: str = "<string>") -> Program:
                     "malformed goal declaration; expected 'goal Name {'",
                     lineno,
                     source_name,
+                    col,
                 )
             if line.startswith("pipeline"):
                 raise ParseError(
                     "malformed pipeline declaration; expected 'pipeline Name {'",
                     lineno,
                     source_name,
+                    col,
                 )
             raise ParseError(
                 f"unexpected top-level content {line!r}; expected "
                 "'goal Name {' or 'pipeline Name {'",
                 lineno,
                 source_name,
+                col,
             )
 
         if current_pipeline is not None:
@@ -115,6 +159,7 @@ def parse_source(text: str, source_name: str = "<string>") -> Program:
                     f"invalid pipeline statement {line!r}; expected 'stage GoalName'",
                     lineno,
                     source_name,
+                    col,
                 )
             current_pipeline.stages.append(
                 StageRef(goal_name=match.group(1), line=lineno)
@@ -136,14 +181,16 @@ def parse_source(text: str, source_name: str = "<string>") -> Program:
                     + ", ".join(SECTION_NAMES),
                     lineno,
                     source_name,
+                    col,
                 )
             if section_name in current_goal.sections:
                 raise ParseError(
                     f"duplicate section {section_name!r} in goal {current_goal.name!r}",
                     lineno,
                     source_name,
+                    col,
                 )
-            current_section = Section(name=section_name, line=lineno)
+            current_section = Section(name=section_name, line=lineno, column=col)
             current_goal.sections[section_name] = current_section
             continue
 
@@ -153,8 +200,9 @@ def parse_source(text: str, source_name: str = "<string>") -> Program:
                 "open a section first (e.g. 'evidence:')",
                 lineno,
                 source_name,
+                col,
             )
-        current_section.statements.append(Statement(text=line, line=lineno))
+        current_section.statements.append(Statement(text=line, line=lineno, column=col))
 
     if current_goal is not None:
         raise ParseError(

@@ -15,25 +15,33 @@ from intentflow.runtime import GoalRuntime, run_pipeline
 
 @pytest.fixture(scope="module")
 def diagnose() -> tuple[dict, dict]:
-    document = compile_program(parse_file("examples/diagnose.iflow"))
-    plan = document["plans"][0]
+    document = compile_program(parse_file("examples/production_diagnosis.iflow"))
+    plan = document["goals"][0]
     result = GoalRuntime(plan, printer=None, workspace="examples/workspace").run()
     return document, result
 
 
 def test_honest_run_is_conformant(diagnose: tuple[dict, dict]) -> None:
     document, result = diagnose
+    assert result["status"] == "needs_human"  # by design (confidence < 0.7)
     report = audit_document(document, result)
     assert report["conformant"] is True
     assert report["violations"] == []
 
 
+def test_completed_triage_run_is_conformant() -> None:
+    document = compile_program(parse_file("examples/opensource_triage.iflow"))
+    result = GoalRuntime(document["goals"][0], printer=None).run()
+    assert result["status"] == "completed"
+    assert audit_document(document, result)["conformant"] is True
+
+
 def test_invoking_a_denied_action_is_detected(diagnose: tuple[dict, dict]) -> None:
     document, result = diagnose
     tampered = copy.deepcopy(result)
-    plan = copy.deepcopy(document["plans"][0])
-    plan["actions"]["denied"].append("read_logs")
-    plan["actions"]["allowed"].remove("read_logs")
+    plan = copy.deepcopy(document["goals"][0])
+    plan["action_policy"]["denied"].append("read_logs")
+    plan["action_policy"]["allowed"].remove("read_logs")
     report = audit_result(plan, tampered)
     assert report["conformant"] is False
     assert any(v["code"] == "A3" for v in report["violations"])
@@ -45,7 +53,7 @@ def test_gated_action_without_approval_is_detected(diagnose: tuple[dict, dict]) 
     tampered["trace"].append(
         {
             "seq": len(tampered["trace"]) + 1,
-            "phase": "actions",
+            "phase": "collect_evidence",
             "event": "tool_invoked",
             "detail": {"action": "deploy_change"},
         }
@@ -57,7 +65,7 @@ def test_gated_action_without_approval_is_detected(diagnose: tuple[dict, dict]) 
 def test_dangling_citation_is_detected(diagnose: tuple[dict, dict]) -> None:
     document, result = diagnose
     tampered = copy.deepcopy(result)
-    tampered["hypotheses"][0]["citations"] = ["E99"]
+    tampered["citations"] = ["E99"]
     report = audit_document(document, tampered)
     assert any(v["code"] == "E1" for v in report["violations"])
 
@@ -88,7 +96,24 @@ def test_hidden_verification_failure_is_detected(diagnose: tuple[dict, dict]) ->
     assert any(v["code"] == "V1" for v in report["violations"])
 
 
-def test_output_contract_violation_is_detected(diagnose: tuple[dict, dict]) -> None:
+def test_status_laundering_is_detected(diagnose: tuple[dict, dict]) -> None:
+    # A run that escalated cannot be re-labelled 'completed'.
+    document, result = diagnose
+    tampered = copy.deepcopy(result)
+    tampered["status"] = "completed"
+    report = audit_document(document, tampered)
+    assert any(v["code"] == "S1" for v in report["violations"])
+
+
+def test_undeclared_output_is_detected(diagnose: tuple[dict, dict]) -> None:
+    document, result = diagnose
+    tampered = copy.deepcopy(result)
+    tampered["outputs"]["sneaky_extra"] = "x"
+    report = audit_document(document, tampered)
+    assert any(v["code"] == "O1" for v in report["violations"])
+
+
+def test_missing_required_output_is_detected(diagnose: tuple[dict, dict]) -> None:
     document, result = diagnose
     tampered = copy.deepcopy(result)
     del tampered["outputs"]["risk"]

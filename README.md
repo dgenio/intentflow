@@ -1,349 +1,297 @@
 # IntentFlow
 
-**An experimental programming language for governed cognitive processes.**
+**A language for governed cognitive processes.**
 
-> Classical programming languages describe deterministic procedures.
-> LLM-native languages should describe **governed cognitive processes**.
+> Python programs deterministic computation.
+> IntentFlow programs governed cognition.
 
-IntentFlow is a small, serious prototype of that idea. Instead of writing
-prompts or wiring chains of model calls, you declare *what a competent,
-accountable reasoning process looks like* — its goal, the evidence it must
-gather, the actions it may take, the checks its conclusions must pass, what
-to do when it is unsure, and when a human must be consulted. The compiler
-turns that declaration into an inspectable execution plan; the runtime
-executes it with a full audit trace.
-
-## Why this exists
-
-Today's LLM systems hide their most important decisions inside
-natural-language prompts: what counts as evidence, how confident the model
-should be before acting, which tools it may call, what "done" means. Those
-decisions are unauditable, untestable, and invisible until something goes
-wrong.
-
-IntentFlow's bet is that these concerns belong in a **language**, where they
-become:
-
-- **Inspectable before execution** — `intentflow compile` shows exactly what
-  the agent will be allowed and required to do, before any model runs.
-- **Statically checkable** — conflicting action policies, missing
-  objectives, and out-of-range confidence thresholds are compile errors.
-- **First-class semantics** — uncertainty, evidence, verification, and human
-  escalation are control flow, not afterthoughts buried in prose.
-
-### Why it is not just Python / LangChain / prompt templates
-
-IntentFlow is **not** trying to replace Python. Python *programs* deterministic
-computation; IntentFlow *programs* governed cognition (using "program" as a
-verb). They compose — an IntentFlow goal can call Python functions as governed
-actions, and Python can compile and run an IntentFlow goal.
-
-| | What you write | Determinism | Where governance lives | Auditable? |
-| --- | --- | --- | --- | --- |
-| **Python function** | exact instructions | fully deterministic | in your code | yes, but it isn't cognition |
-| **Prompt template** | interpolated strings | none | inside prose the model may ignore | no — output only |
-| **Agent framework** | functions to wire up | partial | in your head + your prompts | partial, ad-hoc logging |
-| **IntentFlow goal** | declared evidence, actions, checks, uncertainty | governed: gates & checks outside the model | in the *program text* — compiled & enforced | yes — every run emits a replayable witness |
-
-- **Not a framework.** Frameworks give you functions to call; the governance
-  still lives in your head and your prompts. IntentFlow makes governance the
-  *program text* — diffable, reviewable, lintable.
-- **Not prompt templating.** Templates interpolate strings. IntentFlow
-  compiles to a typed cognitive IR where `require_approval deploy_change`
-  is a machine-enforced policy, not a sentence the model might ignore.
-- **Not a chatbot wrapper.** There is no chat loop. There is a plan with
-  phases, gates, and checks, and a trace of what actually happened.
-
-Concretely, an IntentFlow goal compiles into an **agent plan**: a JSON
-execution plan with a staged prompt plan (one inspectable block per concern —
-system role, objective, evidence, allowed actions, denied actions,
-verification, uncertainty handling, output format), an action policy the
-runtime enforces *outside* the model, and a risk profile a reviewer reads
-before approving a run.
-
-## Core thesis
-
-A program in IntentFlow specifies:
-
-| Concern | Section | Example |
-| --- | --- | --- |
-| Goal | `objective:` | identify the most likely root cause |
-| Context/memory policy | `context:` | `max_tokens 12000`, `preserve user_decisions` |
-| Evidence requirements | `evidence:` | `require logs`, `distrust speculation_without_sources` |
-| Reasoning discipline | `model:` | `separate observation from inference` |
-| Governed actions | `actions:` | `allow read_logs`, `require_approval deploy_change` |
-| Verification rules | `verify:` | `each hypothesis must cite evidence` |
-| Uncertainty handling | `uncertainty:` | `if confidence < 0.7 ask_human` |
-| Output contract | `output:` | `root_cause`, `confidence`, `risk` |
-
-Human escalation (`ask_human`) is **normal control flow**, and every run
-produces an **auditable trace** as a language/runtime feature, not a logging
-add-on.
-
-## Example
+IntentFlow is not a chatbot wrapper and not a prompt template. It is a
+small language that compiles cognitive intent — a goal, its evidence
+requirements, its action policy, its verification rules, its uncertainty
+handling, and its typed output contract — into an **auditable, governed,
+executable agent plan**. The runtime executes that plan through explicit
+phases and emits a hash-chained trace that a third party can independently
+verify.
 
 ```text
-goal DiagnoseProductionIssue {
+.iflow source -> parser -> analyzer (IFLOW diagnostics) -> compiler ->
+execution plan (JSON) -> runtime (13-phase machine) -> traced result ->
+replay / audit
+```
+
+## Install
+
+```bash
+pip install -e .            # core: zero runtime dependencies
+pip install -e ".[dev]"     # + pytest
+pip install -e ".[openai]"  # + OpenAI-compatible backend
+pip install -e ".[llm]"     # + Anthropic backend
+```
+
+## Quickstart
+
+```bash
+intentflow validate examples/opensource_triage.iflow
+intentflow inspect  examples/opensource_triage.iflow
+intentflow explain  examples/opensource_triage.iflow
+intentflow compile  examples/opensource_triage.iflow --out plan.json
+intentflow run      examples/opensource_triage.iflow --backend simulate --trace-dir traces
+intentflow replay   traces/TriageGitHubIssue-*.json
+intentflow audit    examples/opensource_triage.iflow traces/TriageGitHubIssue-*.json
+```
+
+Every command above works offline, deterministically, with no API key.
+
+## First example
+
+```text
+goal TriageGitHubIssue {
   objective:
-    identify the most likely root cause of a failing production job
+    triage a GitHub issue safely and propose a maintainer-ready response
 
   context:
-    max_tokens 12000
-    prefer recent_logs
-    preserve user_decisions
+    max_tokens 10000
+    prefer recent_comments
+    preserve maintainer_intent
 
   evidence:
-    require logs
-    require config
-    require recent_commits
-    distrust speculation_without_sources
-
-  model:
-    propose hypotheses with confidence
-    separate observation from inference
+    require issue_body
+    require comments
+    require repo_context
+    optional related_issues
+    distrust unsupported_claims
 
   actions:
-    allow read_logs
-    allow inspect_code
-    require_approval deploy_change
+    allow read_issue
+    allow search_repo
+    allow draft_comment
+    require_approval post_comment
+    deny close_issue
 
   verify:
-    each hypothesis must cite evidence
-    proposed fix must include rollback path
+    require cites_evidence
+    require maintainer_safe_tone
+    require no_unverified_claims
+    check confidence >= 0.65
 
   uncertainty:
-    if confidence < 0.7 ask_human
-    if competing_hypotheses remain run_discriminating_test
+    if confidence < 0.65 ask_human
+    if missing_evidence ask_human
+    if security_risk block_action
 
   output:
-    root_cause
-    confidence
-    recommended_fix
-    risk
+    summary: string
+    likely_cause: string?
+    confidence: number
+    suggested_response: markdown
+    proposed_labels: list[string]
 }
 ```
 
-## The deep angle: programs as contracts, traces as witnesses
+Reading this file tells you — and `intentflow explain` will say it in plain
+English — what the goal is, what evidence is mandatory, what the agent may
+do, what is forbidden, what needs a human, how the result is checked, and
+exactly what typed output it promises.
 
-The honest objection to any "agent DSL" is: *couldn't this just be a Python
-dataclass?* A dataclass can hold the same fields. What it cannot do is give
-the fields **semantics that survive the model boundary**. IntentFlow's
-answer has three parts:
+## Language concepts
 
-1. **The program is a contract.** `require_approval deploy_change` is not
-   data the runtime may consult; it is a policy the
-   [`ActionGate`](intentflow/tools.py) enforces *outside the model*. A tool
-   the goal does not allow cannot run — the model cannot talk its way past
-   the gate, because the gate never reads model output.
-2. **The trace is a witness.** Every run emits an append-only trace in a
-   defined format: every tool invocation, approval, rule evaluation, check
-   result, and escalation, in canonical phase order.
-3. **Conformance is independently verifiable.** `intentflow audit` replays
-   a result against the recompiled plan and proves — without trusting the
-   runtime, the backend, or the model — that the run stayed inside its
-   envelope: no denied action ran, every gated action has a prior approval
-   grant, every citation points at collected evidence, no verification
-   failure was dropped from the result, the output contract was met.
+| Concern | Section | Enforced by |
+| --- | --- | --- |
+| Goal | `objective:` | analyzer (required) |
+| Context policy | `context:` | runtime (prompt plan), analyzer bounds |
+| Evidence | `evidence:` (`require`/`optional`/`prefer`/`distrust`) | action gate + `missing_evidence` signal |
+| Reasoning discipline | `model:` | prompt plan |
+| Action governance | `actions:` (`allow`/`require_approval`/`deny`) | the `ActionGate`, outside the model |
+| Verification | `verify:` (`check`, `require`, free text) | machine checks + judged tier |
+| Uncertainty | `uncertainty:` (`if <cond> <action>`) | run status control flow |
+| Output contract | `output:` (typed fields) | implicit `V0` schema check |
 
-This is *proof-carrying agent behavior*: the same move that audit logs +
-seccomp profiles made for processes, applied to cognition. A dataclass can
-describe an envelope; it cannot make violations of the envelope detectable
-by a third party. That property has to live in a language + runtime + trace
-format that agree with each other — which is exactly what IntentFlow is.
+Typed output fields are part of the language: `string`, `number`,
+`boolean`, `markdown` (each with optional `?`), `list[string]`,
+`list[number]`, `object`, `object?`. The full grammar, diagnostics table,
+and invalid examples live in [`docs/language_spec.md`](docs/language_spec.md).
 
-## Current features
+## CLI
 
-- **Parser** for `.iflow` files: line-based grammar, `#` comments, parse
-  errors with file and line numbers; `goal` blocks and `pipeline` blocks.
-- **Typed AST + cognitive IR**: `Goal`, `Pipeline`, `EvidenceRequirement`,
-  `ActionPolicy`, `VerificationRule`, `UncertaintyRule`, `ContextPolicy`,
-  `OutputSpec`.
-- **Compiler** to a JSON execution plan: normalized objective, evidence by
-  stance, allowed / approval-gated / denied actions, **typed verification
-  checks** (machine-checkable `cites_evidence` / `requires_phrase` /
-  `threshold_check` vs LLM-judged — the distinction is part of the plan),
-  uncertainty policy, **calibration policy**, a **risk profile**, output
-  contract, and a **staged prompt plan** with one inspectable block per
-  governance concern (system → objective → evidence → allowed actions →
-  denied actions → verify → uncertainty → output).
-- **Goal composition**: pipelines whose evidence chains
-  (`require DiagnoseIncident.root_cause`) are **statically checked** — a
-  stage cannot require an output no earlier stage produces.
-- **Static analysis** (`intentflow lint`): destructive actions allowed
-  without safeguards, unreachable or duplicate uncertainty thresholds,
-  conditions and rules that cannot be enforced.
-- **Governed runtime**: cognition is a pluggable backend — deterministic
-  simulation (default), a real Claude model via `--backend anthropic`, or any
-  OpenAI-compatible endpoint via `--backend openai` (OpenAI, Azure, local
-  vLLM/Ollama through env vars) — but governance is not pluggable. Evidence
-  collection runs through the action gate, raw confidence is calibrated
-  before uncertainty rules fire, judged verification rules are recorded as
-  *skipped*, never silently passed, and `ask_human` / approval gates are
-  control flow. Each run also returns a flat **summary** (confidence,
-  verification status, uncertainty status, actions requested/blocked,
-  trace id).
-- **Blocking approval gates** (`tools.Approver`): approval-gated actions can
-  be pre-granted (`--approve`), prompted interactively on a TTY
-  (`--approve-interactive`), or resolved by a synchronous webhook
-  (`--approve-webhook URL`). Every decision — and the channel it came
-  through — is recorded in the trace; fail-closed by default.
-- **LLM-judge runner** (`--judge`): `judged` verification rules can be
-  evaluated by an LLM judge (`simulate`, `openai`, or `anthropic`) in a
-  **separate trust tier** — judged verdicts carry the judge's name and a
-  rationale and are reported apart from machine checks, never merged with
-  them. With no judge they stay *skipped*, never silently passed.
-- **Hash-chained, optionally signed traces**: every trace event is linked by
-  `sha256(prev || event)`, so the auditor recomputes the chain *without the
-  program* and catches accidental corruption, truncation, or reordering. The
-  bare chain is integrity, not authenticity — its links live in the trace, so a
-  forger could recompute them. `--sign-trace` (with `IFLOW_TRACE_KEY`)
-  HMAC-seals the root, so anyone holding the key can *detect* edits (including
-  to runs they did not execute) — detection, not prevention.
-- **Python embedding** (`intentflow.load(...).run(...)`): load, validate,
-  compile, inspect, and run goals/pipelines from Python, and register Python
-  functions as governed actions — they still execute through the action gate.
-- **Recorded backends** (cassettes): `--record-cassette` captures a real
-  model's replies; `--backend replay --cassette` replays them deterministically
-  so the real parsing/governance path is testable in CI without API keys.
-- **Real governed tools**: with `--workspace`, evidence sources are
-  collected by real read-only tools through the gate; a goal that requires
-  `logs` but does not allow `read_logs` gets a traced `action_blocked`, not
-  the file contents.
-- **Trace auditing** (`intentflow audit`): independent conformance checking
-  of any run result against the program, including tamper detection
-  (hidden verification failures, unapproved gated actions, dangling
-  citations, broken trace sequences, **broken hash chains**, and **invalid
-  signatures** are all caught — all covered by tests).
-- **Developer tooling** (`intentflow format`, `intentflow inspect`): an
-  idempotent, comment-preserving formatter and an at-a-glance summary of a
-  goal's sections, actions, evidence, output fields, and warnings.
-- **CLI**: `parse`, `validate` (`--json`), `lint`, `compile`, `inspect`,
-  `format` (`--check` / `--write`), `run` (`--backend simulate|anthropic|openai|replay`,
-  `--judge`, `--approve` / `--approve-interactive` / `--approve-webhook`,
-  `--sign-trace`, `--cassette` / `--record-cassette`, `--trace-dir`), `audit`.
+| Command | Purpose |
+| --- | --- |
+| `intentflow parse <file>` | print the AST as JSON |
+| `intentflow validate <file> [--json]` | static analyzer: coded diagnostics (IFLOW001–022) |
+| `intentflow lint <file> [--strict]` | advisory tier only (warnings/info) |
+| `intentflow compile <file> [--out plan.json]` | emit the versioned execution plan |
+| `intentflow inspect <file> [--json]` | at-a-glance summary of a goal |
+| `intentflow explain <file> [--json]` | translate the program into plain English |
+| `intentflow format <file> [--check\|--write]` | idempotent canonical formatter |
+| `intentflow run <file> [...]` | execute through the 13-phase runtime |
+| `intentflow replay <trace.json> [--json]` | readable summary of a saved trace |
+| `intentflow audit <file> <result.json>` | independently verify a run against the plan |
 
-## Install & use
+`run` flags: `--backend simulate|mock|openai|anthropic|replay`, `--goal`,
+`--pipeline`, `--workspace DIR`, `--approve ACTION`,
+`--approve-interactive`, `--approve-webhook URL`, `--judge`,
+`--cassette/--record-cassette`, `--sign-trace`, `--trace-dir`,
+`--trace-out`, `--json`, `--verbose`.
+
+## Run statuses
+
+Every run ends in exactly one status, and the exit code follows it:
+
+| Status | Meaning | Exit |
+| --- | --- | --- |
+| `completed` | output produced, verification passed | 0 |
+| `needs_human` | an uncertainty rule escalated (`ask_human`) | 0 |
+| `blocked` | policy stopped the run (`block_action`) | 1 |
+| `failed_validation` | analyzer errors; nothing executed | 1 |
+| `failed_verification` | a machine check failed | 1 |
+| `backend_error` | backend failed / unusable output | 1 |
+
+The runtime can never report a failed verification as success — the auditor
+checks for exactly that cover-up (violation `S1`/`V1`).
+
+## Simulation mode (default)
+
+The `simulate` backend is deterministic mock cognition: it honors the
+goal's typed output schema, cites the evidence that was actually collected,
+reports a fixed raw confidence (0.72, calibrated to 0.676), and labels
+everything `[simulated]`. It exists so the *control structure* — gating,
+calibration, verification, escalation, tracing — is testable end to end
+with no network.
 
 ```bash
-pip install -e ".[dev]"          # add llm/openai extras for real backends:
-#   pip install -e ".[dev,llm]"     -> Anthropic backend
-#   pip install -e ".[dev,openai]"  -> OpenAI-compatible backend
-
-intentflow parse    examples/diagnose.iflow      # print the AST as JSON
-intentflow validate examples/diagnose.iflow      # semantic checks (--json too)
-intentflow lint     examples/diagnose.iflow      # static policy analysis
-intentflow inspect  examples/diagnose.iflow      # goals, actions, evidence, warnings
-intentflow format   examples/diagnose.iflow --check   # check canonical formatting
-intentflow compile  examples/diagnose.iflow      # print the execution plan
-
-# simulated cognition, real governed evidence collection, saved witness:
-intentflow run examples/diagnose.iflow --backend simulate \
-    --workspace examples/workspace --trace-dir traces/
-
-# independently verify the run stayed inside the program's envelope:
-intentflow audit examples/diagnose.iflow traces/DiagnoseProductionIssue-*.json
-
-# composed goals with a statically checked evidence chain:
-intentflow run examples/incident_pipeline.iflow --simulate \
-    --pipeline IncidentResponse
-
-# real model cognition behind the same governance:
-intentflow run examples/diagnose.iflow --backend anthropic   # ANTHROPIC_API_KEY
-OPENAI_MODEL=gpt-4o-mini \
-intentflow run examples/diagnose.iflow --backend openai      # OPENAI_API_KEY,
-                                                              # OPENAI_BASE_URL
-
-python -m pytest                                  # run the test suite
+intentflow run examples/production_diagnosis.iflow \
+    --workspace examples/workspace --trace-dir traces --verbose
+# -> needs_human: calibrated confidence 0.676 < 0.7, by design
 ```
 
-### Use from Python
+With `--workspace`, evidence is collected by real read-only tools *through
+the action gate*: a goal that requires `logs` but does not allow
+`read_logs` gets a traced `action_blocked` and a `missing_evidence` signal
+— not the file contents.
+
+## Real backend mode
+
+```bash
+OPENAI_API_KEY=... intentflow run examples/opensource_triage.iflow --backend openai
+ANTHROPIC_API_KEY=... intentflow run examples/opensource_triage.iflow --backend anthropic
+```
+
+Real backends sit behind the identical governance path and return a full
+`BackendResponse` (raw text, parsed JSON, model, latency, token usage,
+finish reason). The OpenAI-compatible backend honors `OPENAI_BASE_URL` /
+`OPENAI_MODEL` (Azure, vLLM, Ollama) and requests structured JSON output.
+`--record-cassette` captures real replies; `--backend replay --cassette`
+replays them deterministically in CI with no keys.
+
+## Traces, replay, audit
+
+`--trace-dir` writes a self-contained artifact per run: trace id,
+timestamp, source path + hash, plan hash, backend, status, all 13 phases,
+diagnostics, messages, evidence, the backend response, parsed output,
+verification results, uncertainty decisions, action-gate decisions, and the
+hash-chained event log (optionally HMAC-signed with `--sign-trace`).
+
+```bash
+intentflow replay traces/TriageGitHubIssue-*.json   # the run as a story
+intentflow audit  examples/opensource_triage.iflow traces/TriageGitHubIssue-*.json
+```
+
+`audit` recompiles the source and proves — without trusting the runtime,
+the backend, or the model — that no denied action ran, every gated action
+had a prior approval, every citation points at collected evidence, no
+verification failure was hidden, the status is consistent with the trace,
+and the trace chain is intact.
+
+## Use from Python
 
 ```python
 import intentflow
 
-program = intentflow.load("examples/diagnose.iflow")
+program = intentflow.load("examples/opensource_triage.iflow")
+result = program.run(backend="simulate")
+assert result["status"] == "completed"
 
 # register a Python function as a governed action (runs through the gate):
-program.register_tool(
-    "lookup_user", serves=("user_record",), handler=lambda src: "enterprise plan"
-)
+program.register_tool("lookup_user", serves=("user_record",),
+                      handler=lambda src: "enterprise plan")
 
-result = program.run(
-    backend="simulate",
-    workspace="examples/workspace",
-    judge="simulate",            # evaluate judged rules (separate trust tier)
-    approve={"deploy_change"},   # pre-grant a gated action
-    sign_key=b"my-trace-key",    # HMAC-seal the trace
-)
-
-report = intentflow.audit_document(program.compile(), result, sign_key=b"my-trace-key")
+report = intentflow.audit_document(program.compile(), result)
 assert report["conformant"]
 ```
 
-Five examples ship with the repo: `examples/diagnose.iflow`,
-`examples/code_review.iflow`, `examples/research_question.iflow`,
-`examples/triage_issue.iflow` (governed open-source issue triage), and
-`examples/incident_pipeline.iflow` (two goals composed into a pipeline),
-plus `examples/workspace/` with real evidence files for governed
-collection.
+## Design philosophy
 
-## Honest status
+The honest objection to any "agent DSL" is: *couldn't this be a Python
+dataclass?* A dataclass can hold the same fields; it cannot give them
+semantics that survive the model boundary. IntentFlow's answer:
 
-This is an **experimental prototype**. The default backend mocks cognition
-deterministically so the *control structure* of the language is testable
-end to end; the Anthropic and OpenAI-compatible backends are real but young
-(they share one governance path with the simulator). Calibration is a
-placeholder shrinkage map, not a learned one. The grammar is intentionally
-minimal. The value today is the shape of the abstraction: a compiled,
-inspectable plan, governance enforced outside the model, and runs whose
-conformance can be verified by a third party.
+1. **The program is a contract.** `deny close_issue` is enforced by the
+   `ActionGate` outside the model. The gate never reads model output, so
+   the model cannot talk its way past it.
+2. **The trace is a witness.** Every run emits a hash-chained, optionally
+   signed event log in a defined format.
+3. **Conformance is independently verifiable.** `intentflow audit` proves a
+   run stayed inside its envelope using only the source and the trace.
+
+See [`docs/design_principles.md`](docs/design_principles.md).
+
+### Compared to the alternatives
+
+| | What you write | Where governance lives | Auditable? |
+| --- | --- | --- | --- |
+| **Python function** | exact instructions | in your code | yes, but it isn't cognition |
+| **Prompt template** | interpolated strings | prose the model may ignore | output only |
+| **Agent framework** | functions to wire up | your head + your prompts | ad-hoc logging |
+| **IntentFlow goal** | evidence, actions, checks, uncertainty, typed output | compiled program text, enforced outside the model | every run emits a replayable witness |
+
+## Examples
+
+Five programs ship with the repo — see [`docs/examples.md`](docs/examples.md):
+
+* [`opensource_triage.iflow`](examples/opensource_triage.iflow) — flagship; completes.
+* [`production_diagnosis.iflow`](examples/production_diagnosis.iflow) — escalates to a human by design.
+* [`code_review.iflow`](examples/code_review.iflow) — typed structured review output.
+* [`research_synthesis.iflow`](examples/research_synthesis.iflow) — intentionally triggers analyzer warnings.
+* [`high_risk_deploy.iflow`](examples/high_risk_deploy.iflow) — intentionally `blocked` by policy.
+* [`incident_pipeline.iflow`](examples/incident_pipeline.iflow) — two goals composed with a statically checked evidence chain.
+
+## Honest status & current limitations
+
+This is an experimental but working language. Known limits (also in the
+spec): line-oriented grammar, no compound conditions, calibration is a
+fixed shrinkage map, `object` outputs are untyped inside, uncertainty
+primitives beyond `ask_human`/`block_action` are recorded but not executed,
+side-effecting tools are governed but not yet executed, and pipelines are
+linear. The simulator mocks cognition; it never pretends otherwise.
 
 ## Roadmap
 
-Shipped since the early prototype: blocking approval gates (TTY/webhook),
-the LLM-judge runner with a separate trust tier, hash-chained + HMAC-signed
-traces, the Python embedding API with governed Python tools, and recorded
-(cassette) backends for keyless CI. What's next:
-
-1. **Learned confidence calibration** from scored historical runs, replacing
-   the shrinkage placeholder.
-2. **Memory/context compiler** that turns `context:` policy into concrete
-   retrieval and eviction behavior (`prefer`, `preserve`, `max_tokens`).
-3. **Richer machine verification predicates** beyond
-   `cites_evidence` / `requires_phrase` / `threshold_check`
-   (e.g. `consistent_with(source)`, numeric output bounds).
-4. **DAG pipelines** with fan-out/fan-in, building on the linear pipelines
-   and static evidence-chain checking that exist today.
-5. **Asynchronous/polling approval** (issue a request, resume on callback),
-   generalizing today's synchronous webhook approver.
-6. **Public-key trace signatures** (Ed25519) so witnesses are verifiable by
-   parties who do not share the signing secret, complementing today's HMAC.
-7. **Compiler optimizations** for token cost, latency, and risk.
-
-See [`docs/architecture.md`](docs/architecture.md) for the conceptual stack
-and design notes.
+Learned calibration, a context/memory compiler, executable uncertainty
+actions, richer machine verification predicates, typed object schemas, DAG
+pipelines, asynchronous approvals, Ed25519 trace signatures, real governed
+tool execution, and editor support — details in
+[`docs/roadmap.md`](docs/roadmap.md).
 
 ## Project layout
 
 ```
 intentflow/
-  __init__.py     public API
-  iflow_ast.py    syntactic AST + cognitive IR nodes
-  parser.py       .iflow -> AST (goals + pipelines)
-  compiler.py     AST -> validated execution plan (JSON), pipeline checking
-  linter.py       static analysis of policies
-  backends.py     pluggable cognition (simulate / Anthropic / OpenAI) + cassettes
+  iflow_ast.py    syntactic AST + typed cognitive IR (JSON-serializable)
+  parser.py       .iflow -> AST (line/column errors, strings, comments)
+  analyzer.py     static analyzer: coded diagnostics IFLOW001-022
+  actions.py      action registry: side-effect/risk metadata + heuristics
+  compiler.py     AST -> versioned execution plan (risk profile, prompt plan)
+  backends.py     BackendResponse contract: simulate/mock/openai/anthropic/replay
   judges.py       LLM-judge runner for 'judged' verification rules
-  formatter.py    idempotent, comment-preserving source formatter
-  tools.py        governed tools, the ActionGate, and approval channels
-  runtime.py      phase-machine runtime with calibration + hash-chained trace
-  auditor.py      trace conformance checking (the contract/witness story)
-  api.py          Python embedding API (load / run / register_tool)
-  cli.py          parse|validate|lint|compile|inspect|format|run|audit
-examples/         five demonstration programs + a real evidence workspace
-tests/            parser, compiler, runtime, tools, pipeline, lint, audit, CLI,
-                  judges, approvals, cassettes, trace chain, embedding API
-docs/             architecture notes
+  tools.py        governed tools, the ActionGate, approval channels
+  runtime.py      13-phase machine, 6 statuses, hash-chained trace
+  auditor.py      independent trace conformance checking
+  explain.py      plain-English rendering of a program
+  formatter.py    canonical, idempotent, comment-preserving formatter
+  api.py          Python embedding (load / run / register_tool)
+  cli.py          parse|validate|lint|compile|inspect|explain|format|run|replay|audit
+examples/         six programs + a real evidence workspace
+tests/            ~230 tests; no network, no API keys
+docs/             language spec, design principles, examples, roadmap
 ```
 
 ## License

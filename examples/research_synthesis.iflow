@@ -1,0 +1,40 @@
+# Synthesize an answer to a research question.
+#
+# This example INTENTIONALLY validates with warnings (but no errors):
+#   - it requires only one evidence source        -> IFLOW009
+#   - one output field is untyped                 -> IFLOW017 (info)
+# Run `intentflow validate examples/research_synthesis.iflow` to see them.
+goal SynthesizeResearch {
+  objective:
+    answer the research question with sourced, balanced evidence
+
+  context:
+    max_tokens 20000
+    prefer primary_sources
+
+  evidence:
+    require primary_sources
+    distrust unsourced_claims
+
+  model:
+    weigh conflicting sources explicitly
+    separate consensus from speculation
+
+  actions:
+    allow search_repo
+    allow read_issue
+
+  verify:
+    require cites_evidence
+    check confidence >= 0.5
+
+  uncertainty:
+    if confidence < 0.5 ask_human
+    if missing_evidence ask_human
+
+  output:
+    answer: markdown
+    confidence: number
+    open_questions
+    sources: list[string]
+}
