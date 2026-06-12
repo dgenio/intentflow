@@ -5,15 +5,86 @@ from __future__ import annotations
 
 import pytest
 
+from intentflow.backends import Hypothesis, Proposal
 from intentflow.compiler import compile_goal
 from intentflow.parser import parse_file, parse_source
-from intentflow.runtime import SimulationRuntime
+from intentflow.runtime import (
+    _DISCRIMINATING_TEST_CONFIDENCE_BOOST,
+    _DISCRIMINATING_TEST_CONFIDENCE_CEILING,
+    _DISCRIMINATING_TEST_CONFIDENCE_FLOOR,
+    _DISCRIMINATING_TEST_CONFIDENCE_PENALTY,
+    _DISCRIMINATING_TEST_CONFIDENCE_PRECISION,
+    SimulationRuntime,
+)
+
+
+class _FixedBackend:
+    name = "fixed"
+
+    def __init__(self, confidences: list[float]) -> None:
+        self._confidences = confidences
+
+    def propose(self, plan: dict, evidence: list[dict]) -> Proposal:
+        return Proposal(
+            hypotheses=[
+                Hypothesis(
+                    hypothesis_id=f"H{i}",
+                    statement=f"hypothesis {i}",
+                    raw_confidence=confidence,
+                    confidence=confidence,
+                    citations=["E1"],
+                )
+                for i, confidence in enumerate(self._confidences, start=1)
+            ],
+            proposed_fix="Rollback: revert to the previous known-good state.",
+        )
 
 
 def _run_example(name: str) -> dict:
     program = parse_file(f"examples/{name}.iflow")
     plan = compile_goal(program.goals[0], program.source_name).to_dict()
     return SimulationRuntime(plan, printer=None).run()
+
+
+def _run_confidences(
+    confidences: list[float], uncertainty_policy: list[dict] | None = None
+) -> SimulationRuntime:
+    source = (
+        "goal RuntimeHeuristics {\n"
+        "  objective:\n    pin runtime heuristic constants\n"
+        "  evidence:\n    require logs\n"
+        "  uncertainty:\n    if competing_hypotheses remain run_discriminating_test\n"
+        "  output:\n    answer\n"
+        "}\n"
+    )
+    program = parse_source(source)
+    plan = compile_goal(program.goals[0]).to_dict()
+    plan["calibration"] = {}
+    if uncertainty_policy is not None:
+        plan["uncertainty_policy"] = uncertainty_policy
+    runtime = SimulationRuntime(plan, backend=_FixedBackend(confidences), printer=None)
+    runtime.run()
+    return runtime
+
+
+def _run_competing_confidences(confidences: list[float]) -> SimulationRuntime:
+    return _run_confidences(confidences)
+
+
+def _run_forced_discriminating_test(confidences: list[float]) -> SimulationRuntime:
+    return _run_confidences(
+        confidences,
+        uncertainty_policy=[
+            {
+                "kind": "threshold",
+                "metric": "confidence",
+                "op": ">",
+                "threshold": 0.0,
+                "condition": "confidence > 0.0",
+                "action": "run_discriminating_test",
+            }
+        ],
+    )
 
 
 @pytest.fixture()
@@ -34,8 +105,17 @@ def test_simulation_completes_with_structured_outputs(diagnose_result: dict) -> 
 
 def test_trace_covers_all_phases(diagnose_result: dict) -> None:
     phases = {event["phase"] for event in diagnose_result["trace"]}
-    assert {"init", "context", "evidence", "actions", "model",
-            "uncertainty", "verify", "output", "done"} <= phases
+    assert {
+        "init",
+        "context",
+        "evidence",
+        "actions",
+        "model",
+        "uncertainty",
+        "verify",
+        "output",
+        "done",
+    } <= phases
     seqs = [event["seq"] for event in diagnose_result["trace"]]
     assert seqs == sorted(seqs)  # append-only, ordered
 
@@ -62,12 +142,48 @@ def test_low_confidence_triggers_human_escalation(diagnose_result: dict) -> None
     assert "human_escalation" in events
 
 
-def test_competing_hypotheses_trigger_discriminating_test(diagnose_result: dict) -> None:
+def test_competing_hypotheses_trigger_discriminating_test(
+    diagnose_result: dict,
+) -> None:
     events = [e["event"] for e in diagnose_result["trace"]]
     assert "discriminating_test" in events
     # The test separates the top two hypotheses, raising the winner.
     top = diagnose_result["hypotheses"][0]
     assert top["confidence"] > 0.7
+
+
+def test_discriminating_test_uses_named_adjustment_magnitudes() -> None:
+    runtime = _run_competing_confidences([0.6, 0.55])
+    by_id = {hyp.hypothesis_id: hyp for hyp in runtime.hypotheses}
+    assert by_id["H1"].confidence == round(
+        0.6 + _DISCRIMINATING_TEST_CONFIDENCE_BOOST,
+        _DISCRIMINATING_TEST_CONFIDENCE_PRECISION,
+    )
+    assert by_id["H2"].confidence == round(
+        0.55 - _DISCRIMINATING_TEST_CONFIDENCE_PENALTY,
+        _DISCRIMINATING_TEST_CONFIDENCE_PRECISION,
+    )
+    assert sum(e["event"] == "discriminating_test" for e in runtime.trace.events) == 1
+
+
+def test_discriminating_test_clamps_confidence_ceiling_and_floor() -> None:
+    runtime = _run_forced_discriminating_test([0.9, 0.08])
+    by_id = {hyp.hypothesis_id: hyp for hyp in runtime.hypotheses}
+    assert by_id["H1"].confidence == _DISCRIMINATING_TEST_CONFIDENCE_CEILING
+    assert by_id["H2"].confidence == _DISCRIMINATING_TEST_CONFIDENCE_FLOOR
+
+
+def test_discriminating_test_preserves_rounding_precision() -> None:
+    runtime = _run_competing_confidences([0.60006, 0.55006])
+    by_id = {hyp.hypothesis_id: hyp for hyp in runtime.hypotheses}
+    assert by_id["H1"].confidence == 0.7801
+    assert by_id["H2"].confidence == 0.4501
+
+
+def test_discriminating_test_skips_when_fewer_than_two_hypotheses() -> None:
+    runtime = _run_forced_discriminating_test([0.6])
+    assert runtime.hypotheses[0].confidence == 0.6
+    assert not any(e["event"] == "discriminating_test" for e in runtime.trace.events)
 
 
 def test_verification_checks_citations_and_rollback(diagnose_result: dict) -> None:
@@ -104,9 +220,7 @@ def test_approval_gated_actions_appear_in_trace(diagnose_result: dict) -> None:
 
 def test_symbolic_rule_without_simulator_is_recorded() -> None:
     result = _run_example("research_question")
-    recorded = [
-        e for e in result["trace"] if e["event"] == "rule_not_simulated"
-    ]
+    recorded = [e for e in result["trace"] if e["event"] == "rule_not_simulated"]
     assert any("conflicting_sources" in e["detail"]["condition"] for e in recorded)
 
 
