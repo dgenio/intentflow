@@ -285,7 +285,9 @@ Five examples ship with the repo: `examples/diagnose.iflow`,
 `examples/triage_issue.iflow` (governed open-source issue triage), and
 `examples/incident_pipeline.iflow` (two goals composed into a pipeline),
 plus `examples/workspace/` with real evidence files for governed
-collection.
+collection. The test suite runs every example against that workspace so
+required evidence sources stay backed by files instead of simulated
+placeholders.
 
 ## Honest status
 

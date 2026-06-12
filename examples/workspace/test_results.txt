@@ -1,0 +1,6 @@
+pytest tests/test_config.py -q
+
+FAILED tests/test_config.py::test_load_legacy_config_without_cache_dir
+KeyError: 'cache_dir'
+
+3 passed, 1 failed

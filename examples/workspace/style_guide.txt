@@ -1,0 +1,5 @@
+Project review guide:
+
+- Treat user-visible migration breaks as correctness issues, not style nits.
+- Blocking findings must cite the changed line and include a minimal remedy.
+- Documentation claims must match behavior for existing supported configs.
