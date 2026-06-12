@@ -300,32 +300,14 @@ conformance can be verified by a third party.
 
 ## Roadmap
 
-Shipped since the early prototype: blocking approval gates (TTY/webhook),
-the LLM-judge runner with a separate trust tier, hash-chained + HMAC-signed
-traces, the Python embedding API with governed Python tools, and recorded
-(cassette) backends for keyless CI. What's next:
+Roadmap ownership now lives in [ROADMAP.md](ROADMAP.md).
 
-1. **Learned confidence calibration** from scored historical runs, replacing
-   the shrinkage placeholder.
-2. **Memory/context compiler** that turns `context:` policy into concrete
-   retrieval and eviction behavior (`prefer`, `preserve`, `max_tokens`).
-3. **Richer machine verification predicates** beyond
-   `cites_evidence` / `requires_phrase` / `threshold_check`
-   (e.g. `consistent_with(source)`, numeric output bounds).
-4. **DAG pipelines** with fan-out/fan-in, building on the linear pipelines
-   and static evidence-chain checking that exist today.
-5. **Asynchronous/polling approval** (issue a request, resume on callback),
-   generalizing today's synchronous webhook approver.
-6. **Public-key trace signatures** (Ed25519) so witnesses are verifiable by
-   parties who do not share the signing secret, complementing today's HMAC.
-7. **Compiler optimizations** for token cost, latency, and risk.
-
-See [`docs/architecture.md`](docs/architecture.md) for the conceptual stack
-and design notes.
+For the architecture model and design notes, see
+[`docs/architecture.md`](docs/architecture.md).
 
 ## Project layout
 
-```
+```text
 intentflow/
   __init__.py     public API
   iflow_ast.py    syntactic AST + cognitive IR nodes
