@@ -3,11 +3,11 @@
 Commands:
 
     intentflow parse <file>            print the AST as JSON
-    intentflow validate <file>         run semantic checks (--json for machine output)
-    intentflow lint <file>             static analysis of policies
+    intentflow validate <file> [...]   run semantic checks (--json for machine output)
+    intentflow lint <file> [...]       static analysis of policies
     intentflow compile <file>          print the execution plan as JSON
     intentflow inspect <file>          summarize goals, actions, evidence, warnings
-    intentflow format <file>           canonically reformat (--check / --write)
+    intentflow format <file> [...]     canonically reformat (--check / --write)
     intentflow run <file>              execute (defaults to the simulate backend)
     intentflow run <file> --backend openai      execute with a real model
     intentflow run <file> --trace-dir traces/    save an inspectable witness
@@ -65,13 +65,13 @@ def cmd_parse(args: argparse.Namespace) -> int:
     return 0
 
 
-def cmd_validate(args: argparse.Namespace) -> int:
-    program = _load(args.file)
+def _validate_file(file: str, *, json_mode: bool) -> tuple[int, dict | None]:
+    program = _load(file)
     diagnostics = validate_program(program)
     errors = [d for d in diagnostics if d.level == "error"]
     warnings = [d for d in diagnostics if d.level == "warning"]
 
-    if getattr(args, "json", False):
+    if json_mode:
         report = {
             "source": program.source_name,
             "ok": not errors,
@@ -83,32 +83,47 @@ def cmd_validate(args: argparse.Namespace) -> int:
                 for d in diagnostics
             ],
         }
-        print(json.dumps(report, indent=2))
-        return 1 if errors else 0
+        return (1 if errors else 0), report
 
     for diag in diagnostics:
         print(f"{program.source_name}:{diag.line}: {diag.level}: {diag.message}")
     if errors:
         print(f"validation failed: {len(errors)} error(s)", file=sys.stderr)
-        return 1
-    print(f"OK: {len(program.goals)} goal(s) valid"
-          + (f" ({len(warnings)} warning(s))" if warnings else ""))
-    return 0
+        return 1, None
+    suffix = f" ({len(warnings)} warning(s))" if warnings else ""
+    print(f"OK: {len(program.goals)} goal(s) valid{suffix}")
+    return 0, None
+
+
+def cmd_validate(args: argparse.Namespace) -> int:
+    reports = []
+    exit_code = 0
+    for file in args.files:
+        code, report = _validate_file(file, json_mode=getattr(args, "json", False))
+        exit_code = max(exit_code, code)
+        if report is not None:
+            reports.append(report)
+    if getattr(args, "json", False):
+        payload = reports[0] if len(reports) == 1 else reports
+        print(json.dumps(payload, indent=2))
+    return exit_code
 
 
 def cmd_lint(args: argparse.Namespace) -> int:
-    program = _load(args.file)
-    findings = lint_program(program)
-    for finding in findings:
-        print(
-            f"{program.source_name}:{finding.line}: {finding.rule_id} "
-            f"{finding.level}: {finding.message}"
-        )
-    warnings = [f for f in findings if f.level == "warning"]
-    print(f"lint: {len(warnings)} warning(s), {len(findings) - len(warnings)} info")
-    if warnings and args.strict:
-        return 1
-    return 0
+    exit_code = 0
+    for file in args.files:
+        program = _load(file)
+        findings = lint_program(program)
+        for finding in findings:
+            print(
+                f"{program.source_name}:{finding.line}: {finding.rule_id} "
+                f"{finding.level}: {finding.message}"
+            )
+        warnings = [f for f in findings if f.level == "warning"]
+        print(f"lint: {len(warnings)} warning(s), {len(findings) - len(warnings)} info")
+        if warnings and args.strict:
+            exit_code = 1
+    return exit_code
 
 
 def cmd_compile(args: argparse.Namespace) -> int:
@@ -252,33 +267,42 @@ def cmd_run(args: argparse.Namespace) -> int:
     return 0
 
 
-def cmd_format(args: argparse.Namespace) -> int:
-    path = Path(args.file)
+def _format_file(args: argparse.Namespace, file: str) -> int:
+    path = Path(file)
     try:
         original = path.read_text(encoding="utf-8")
     except FileNotFoundError:
-        print(f"error: file not found: {args.file}", file=sys.stderr)
+        print(f"error: file not found: {file}", file=sys.stderr)
         return 2
     # Parse first so we never reformat syntactically broken source.
-    _load(args.file)
+    _load(file)
     formatted = format_source(original)
 
     if args.check:
         if formatted != original:
-            print(f"{args.file}: not formatted (run 'intentflow format' to fix)",
-                  file=sys.stderr)
+            print(
+                f"{file}: not formatted (run 'intentflow format' to fix)",
+                file=sys.stderr,
+            )
             return 1
-        print(f"{args.file}: already formatted")
+        print(f"{file}: already formatted")
         return 0
     if args.write:
         if formatted != original:
             path.write_text(formatted, encoding="utf-8")
-            print(f"{args.file}: reformatted")
+            print(f"{file}: reformatted")
         else:
-            print(f"{args.file}: already formatted")
+            print(f"{file}: already formatted")
         return 0
     sys.stdout.write(formatted)
     return 0
+
+
+def cmd_format(args: argparse.Namespace) -> int:
+    exit_code = 0
+    for file in args.files:
+        exit_code = max(exit_code, _format_file(args, file))
+    return exit_code
 
 
 def cmd_inspect(args: argparse.Namespace) -> int:
@@ -346,15 +370,17 @@ def build_parser() -> argparse.ArgumentParser:
     p_parse.add_argument("file")
     p_parse.set_defaults(func=cmd_parse)
 
-    p_validate = sub.add_parser("validate", help="run semantic checks on a .iflow file")
-    p_validate.add_argument("file")
+    p_validate = sub.add_parser("validate", help="run semantic checks on .iflow files")
+    p_validate.add_argument("files", nargs="+")
     p_validate.add_argument(
         "--json", action="store_true", help="emit machine-readable JSON diagnostics"
     )
     p_validate.set_defaults(func=cmd_validate)
 
-    p_lint = sub.add_parser("lint", help="static analysis of action/uncertainty policies")
-    p_lint.add_argument("file")
+    p_lint = sub.add_parser(
+        "lint", help="static analysis of action/uncertainty policies"
+    )
+    p_lint.add_argument("files", nargs="+")
     p_lint.add_argument("--strict", action="store_true", help="exit 1 on warnings")
     p_lint.set_defaults(func=cmd_lint)
 
@@ -425,8 +451,8 @@ def build_parser() -> argparse.ArgumentParser:
     )
     p_run.set_defaults(func=cmd_run)
 
-    p_format = sub.add_parser("format", help="canonically reformat a .iflow file")
-    p_format.add_argument("file")
+    p_format = sub.add_parser("format", help="canonically reformat .iflow files")
+    p_format.add_argument("files", nargs="+")
     p_format.add_argument(
         "--check",
         action="store_true",

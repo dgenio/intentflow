@@ -26,6 +26,20 @@ def test_validate_ok(capsys: pytest.CaptureFixture[str]) -> None:
     assert "OK" in capsys.readouterr().out
 
 
+def test_validate_accepts_multiple_files(capsys: pytest.CaptureFixture[str]) -> None:
+    assert (
+        main(
+            [
+                "validate",
+                "examples/diagnose.iflow",
+                "examples/research_question.iflow",
+            ]
+        )
+        == 0
+    )
+    assert capsys.readouterr().out.count("OK") == 2
+
+
 def test_validate_reports_errors(tmp_path, capsys: pytest.CaptureFixture[str]) -> None:
     bad = tmp_path / "bad.iflow"
     bad.write_text("goal G {\n  output:\n    result\n}\n")
@@ -72,6 +86,28 @@ def test_validate_json_output(capsys: pytest.CaptureFixture[str]) -> None:
     assert "diagnostics" in report
 
 
+def test_validate_json_outputs_list_for_multiple_files(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    assert (
+        main(
+            [
+                "validate",
+                "examples/diagnose.iflow",
+                "examples/research_question.iflow",
+                "--json",
+            ]
+        )
+        == 0
+    )
+    reports = json.loads(capsys.readouterr().out)
+    assert [report["ok"] for report in reports] == [True, True]
+    assert [report["source"] for report in reports] == [
+        "examples/diagnose.iflow",
+        "examples/research_question.iflow",
+    ]
+
+
 def test_validate_json_reports_errors(tmp_path, capsys: pytest.CaptureFixture[str]) -> None:
     bad = tmp_path / "bad.iflow"
     bad.write_text("goal G {\n  output:\n    result\n}\n")
@@ -99,6 +135,36 @@ def test_inspect_json_output(capsys: pytest.CaptureFixture[str]) -> None:
 
 def test_format_check_passes_on_canonical_file(capsys: pytest.CaptureFixture[str]) -> None:
     assert main(["format", "examples/diagnose.iflow", "--check"]) == 0
+
+
+def test_lint_strict_accepts_multiple_files(capsys: pytest.CaptureFixture[str]) -> None:
+    assert (
+        main(
+            [
+                "lint",
+                "examples/diagnose.iflow",
+                "examples/research_question.iflow",
+                "--strict",
+            ]
+        )
+        == 0
+    )
+    assert capsys.readouterr().out.count("lint:") == 2
+
+
+def test_format_check_accepts_multiple_files(capsys: pytest.CaptureFixture[str]) -> None:
+    assert (
+        main(
+            [
+                "format",
+                "examples/diagnose.iflow",
+                "examples/research_question.iflow",
+                "--check",
+            ]
+        )
+        == 0
+    )
+    assert capsys.readouterr().out.count("already formatted") == 2
 
 
 def test_format_check_fails_on_messy_file(tmp_path, capsys: pytest.CaptureFixture[str]) -> None:
