@@ -1,0 +1,20 @@
+- id: intentflow-format-check
+  name: intentflow format --check
+  description: Check canonical formatting for staged .iflow files.
+  entry: intentflow format --check
+  language: python
+  files: \.iflow$
+
+- id: intentflow-validate
+  name: intentflow validate
+  description: Run semantic validation on staged .iflow files.
+  entry: intentflow validate
+  language: python
+  files: \.iflow$
+
+- id: intentflow-lint
+  name: intentflow lint --strict
+  description: Run strict static analysis on staged .iflow files.
+  entry: intentflow lint --strict
+  language: python
+  files: \.iflow$

@@ -230,10 +230,10 @@ pip install -e ".[dev]"          # add llm/openai extras for real backends:
 #   pip install -e ".[dev,openai]"  -> OpenAI-compatible backend
 
 intentflow parse    examples/diagnose.iflow      # print the AST as JSON
-intentflow validate examples/diagnose.iflow      # semantic checks (--json too)
-intentflow lint     examples/diagnose.iflow      # static policy analysis
+intentflow validate examples/*.iflow             # semantic checks (--json too)
+intentflow lint     examples/*.iflow --strict    # static policy analysis
 intentflow inspect  examples/diagnose.iflow      # goals, actions, evidence, warnings
-intentflow format   examples/diagnose.iflow --check   # check canonical formatting
+intentflow format   examples/*.iflow --check     # check canonical formatting
 intentflow compile  examples/diagnose.iflow      # print the execution plan
 
 # simulated cognition, real governed evidence collection, saved witness:
@@ -254,6 +254,31 @@ intentflow run examples/diagnose.iflow --backend openai      # OPENAI_API_KEY,
                                                               # OPENAI_BASE_URL
 
 python -m pytest                                  # run the test suite
+```
+
+### Pre-commit hooks
+
+IntentFlow publishes pre-commit hooks for staged `.iflow` files. Add this to a
+consumer repository's `.pre-commit-config.yaml`:
+
+```yaml
+repos:
+  - repo: https://github.com/dgenio/intentflow
+    rev: <release-tag-or-commit>
+    hooks:
+      - id: intentflow-format-check
+      - id: intentflow-validate
+      - id: intentflow-lint
+```
+
+The hooks receive all staged `.iflow` filenames from pre-commit and run
+`intentflow format --check`, `intentflow validate`, and
+`intentflow lint --strict`. This repository also includes a local
+`.pre-commit-config.yaml`, so contributors can run:
+
+```bash
+pip install -e ".[dev]"
+pre-commit run --all-files
 ```
 
 ### Use from Python
