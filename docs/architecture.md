@@ -7,18 +7,26 @@ Human intent
     ↓
 IntentFlow source (.iflow)        — declarative, reviewable, diffable
     ↓
-Cognitive IR                      — typed nodes: evidence, actions,
-                                    uncertainty, verification, context
+Static analyzer                   — coded diagnostics (IFLOW001–022)
     ↓
-Execution plan (JSON)             — the contract between language and runtime;
+Cognitive IR                      — typed nodes: evidence, actions,
+                                    uncertainty, verification, context, output schema
+    ↓
+Execution plan (JSON, v0.2)       — the contract between language and runtime;
                                     inspectable before anything runs
     ↓
-Agent runtime                     — phase machine: context → evidence →
-                                    actions → model → uncertainty → verify → output
+Agent runtime                     — 13-phase machine: parse → analyze → compile →
+                                    prepare_context → collect_evidence →
+                                    build_messages → call_backend → parse_output →
+                                    verify_output → apply_uncertainty_policy →
+                                    enforce_action_policy → finalize → trace
     ↓
-LLM / tool calls                  — mocked today; governed adapters tomorrow
+LLM / tool calls                  — simulated by default; real backends behind
+                                    the same governance
     ↓
-Verification / trace / output     — checked result + append-only audit trace
+Verified result + status          — completed | needs_human | blocked |
+                                    failed_validation | failed_verification |
+                                    backend_error, plus a hash-chained trace
 ```
 
 Each layer narrows what the layer below is allowed to do. That is the point:
@@ -36,11 +44,15 @@ every later layer can point back at source. The syntactic AST (`Program`,
 
 ### AST → Cognitive IR (`compiler.py` lowering)
 
-Statements are lowered into typed nodes — `EvidenceRequirement` (with a
-*stance*: require / prefer / distrust), `ActionPolicy` (allow / deny /
-require_approval), `UncertaintyRule` (threshold or symbolic conditions
-mapped to control-flow actions), `VerificationRule`, `ContextPolicy`,
-`OutputSpec`. This IR is the heart of the project: it is a representation of
+Statements are lowered into typed nodes — `EvidenceRequirement` /
+`EvidencePolicy` (stances: require / optional / prefer / distrust),
+`ActionRule` / `ActionPolicy` (allow / deny / require_approval),
+`UncertaintyRule` (threshold or signal conditions mapped to control-flow
+actions), `VerificationRule` / `VerificationPolicy`, `ContextPolicy`,
+`GoalMetadata`, `RiskProfile`, `PromptPlan`, and a typed `OutputSchema`
+(`OutputField` with base type, optionality, list item types). The analyzer
+(`analyzer.py`) runs between parsing and compilation and is what
+`intentflow validate` reports. This IR is the heart of the project: it is a representation of
 a *cognitive process under governance*, not a prompt string. Anything that
 wants to analyze, optimize, or enforce agent behavior operates here.
 
@@ -69,17 +81,18 @@ are warnings.
 
 ### Plan → Execution (`runtime.py`, `backends.py`, `tools.py`)
 
-The runtime is an explicit phase machine
-(context → actions → evidence → model → uncertainty → verify → output).
+The runtime is an explicit 13-phase machine ending in one of six statuses.
 Cognition is a pluggable backend behind one narrow, provider-agnostic
-contract — ``propose(plan, evidence) -> Proposal`` — with three
-implementations: deterministic simulation (the conformance reference; no
-network, no flakiness), a real Claude backend, and an OpenAI-compatible
-backend (OpenAI, Azure, or local servers such as vLLM/Ollama via
-`OPENAI_BASE_URL`). All three assemble the same staged prompt plan and parse
-the same strict-JSON reply, so adding a provider is one class and none can
-opt out of governance. Governance is **not** pluggable. It lives outside the
-backend:
+contract — ``respond(plan, evidence, system, user) -> BackendResponse``
+(raw text, parsed JSON, model name, latency, token usage, finish reason) —
+with several implementations: deterministic simulation (the conformance
+reference; honors the typed output schema, no network, no flakiness), a
+mock backend for tests, a real Claude backend, an OpenAI-compatible backend
+(OpenAI, Azure, or local servers such as vLLM/Ollama via
+`OPENAI_BASE_URL`), and cassette replay. All assemble the same staged
+prompt plan and parse the same strict-JSON reply, so adding a provider is
+one class and none can opt out of governance. Governance is **not**
+pluggable. It lives outside the backend:
 
 1. **The ActionGate is the enforcement point.** Every tool invocation —
    including evidence collection from a workspace — goes through the gate,
@@ -99,10 +112,13 @@ backend:
    evaluation, escalation, gate decision, and check lands in the trace with
    a sequence number, as an independent snapshot (never a live reference to
    mutable state).
-5. **Uncertainty actions are control flow.** `ask_human` produces an
-   escalation record; `run_discriminating_test` mutates hypothesis
-   confidences and re-ranks. Rules without an evaluator are recorded, never
-   silently dropped.
+5. **Uncertainty actions are control flow.** `ask_human` ends the run in
+   `needs_human`; `block_action` ends it in `blocked`. Signals
+   (`missing_evidence`, `security_risk`, `competing_hypotheses`) are
+   evaluated against real run state; rules without an evaluator are
+   recorded, never silently dropped. A failed machine verification ends the
+   run in `failed_verification` — the runtime cannot report it as success,
+   and the auditor checks for exactly that cover-up (S1).
 
 ### Composition (`pipeline` blocks)
 
@@ -123,7 +139,9 @@ trace is append-only and in canonical phase order (T1/T2), the trace hash
 chain is intact and any HMAC signature verifies (T3), citations point at
 collected evidence (E1), every uncertainty rule was evaluated or recorded
 (U1), every verification rule was checked and no failure was hidden from the
-result (V1), and the output contract was met exactly (O1).
+result (V1), the reported status is consistent with the trace — a run that
+escalated or failed verification cannot claim `completed` (S1) — and the
+outputs match the declared schema (O1).
 
 Because the auditor needs only the source and the result JSON, conformance
 can be verified without trusting the runtime, the backend, or the model —

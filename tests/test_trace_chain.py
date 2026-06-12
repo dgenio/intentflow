@@ -5,8 +5,6 @@ from __future__ import annotations
 
 import copy
 
-import pytest
-
 from intentflow.auditor import _check_trace_chain, audit_document
 from intentflow.compiler import compile_program
 from intentflow.parser import parse_file
@@ -14,9 +12,9 @@ from intentflow.runtime import GENESIS_HASH, GoalRuntime
 
 
 def _doc_and_result(sign_key: bytes | None = None):
-    document = compile_program(parse_file("examples/diagnose.iflow"))
+    document = compile_program(parse_file("examples/production_diagnosis.iflow"))
     result = GoalRuntime(
-        document["plans"][0], printer=None, workspace="examples/workspace",
+        document["goals"][0], printer=None, workspace="examples/workspace",
         sign_key=sign_key,
     ).run()
     return document, result

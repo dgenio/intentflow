@@ -1,0 +1,4 @@
+test_retry_gives_up_after_attempts ... FAILED (expected 3 calls, got 4)
+test_retry_succeeds_on_second_try ... ok
+test_backoff_is_exponential ... FAILED (sleep called with 0.1, expected 1)
+2 failed, 1 passed

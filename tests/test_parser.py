@@ -1,10 +1,13 @@
-"""Parser tests: valid programs, comments, and error reporting with lines."""
+"""Parser tests: valid programs, comments, strings, and error reporting with
+line/column positions."""
 
 from __future__ import annotations
 
+from pathlib import Path
+
 import pytest
 
-from intentflow.parser import ParseError, parse_file, parse_source
+from intentflow.parser import ParseError, parse_file, parse_source, strip_comment
 
 VALID = """\
 # top-level comment
@@ -21,7 +24,8 @@ goal Demo {
     require_approval deploy
 
   output:
-    result
+    result: string
+    confidence: number
 }
 """
 
@@ -38,22 +42,41 @@ def test_parse_valid_program() -> None:
     ]
 
 
+def test_source_text_is_kept_for_hashing() -> None:
+    program = parse_source(VALID)
+    assert program.source_text == VALID
+    assert "source_text" not in program.to_dict()
+
+
 def test_comments_and_blank_lines_are_ignored() -> None:
     program = parse_source(VALID)
     objective = program.goals[0].statements("objective")
     assert [s.text for s in objective] == ["do the thing"]
 
 
-def test_statement_line_numbers_are_recorded() -> None:
+def test_hash_inside_string_is_not_a_comment() -> None:
+    assert strip_comment('description "issue #42" # real comment') == (
+        'description "issue #42"'
+    )
+    src = (
+        'goal G {\n  meta:\n    description "fixes #42"\n'
+        "  objective:\n    x\n  output:\n    a: string\n}\n"
+    )
+    program = parse_source(src)
+    assert program.goals[0].statements("meta")[0].text == 'description "fixes #42"'
+
+
+def test_statement_positions_are_recorded() -> None:
     program = parse_source(VALID)
     require_logs = program.goals[0].statements("evidence")[0]
     assert require_logs.line == 7
+    assert require_logs.column == 5
 
 
 def test_parse_example_files() -> None:
-    for name in ("diagnose", "code_review", "research_question", "triage_issue"):
-        program = parse_file(f"examples/{name}.iflow")
-        assert program.goals, name
+    for path in sorted(Path("examples").glob("*.iflow")):
+        program = parse_file(path)
+        assert program.goals, path
 
 
 def test_unclosed_goal_is_an_error() -> None:
@@ -63,18 +86,29 @@ def test_unclosed_goal_is_an_error() -> None:
     assert exc_info.value.line == 1
 
 
-def test_unknown_section_is_an_error_with_line() -> None:
+def test_unknown_section_is_an_error_with_position() -> None:
     source = "goal G {\n  objective:\n    x\n  vibes:\n    y\n}\n"
     with pytest.raises(ParseError) as exc_info:
         parse_source(source)
     assert "unknown section 'vibes'" in str(exc_info.value)
     assert exc_info.value.line == 4
+    assert exc_info.value.column == 3
 
 
 def test_duplicate_section_is_an_error() -> None:
     source = "goal G {\n  objective:\n    x\n  objective:\n    y\n}\n"
     with pytest.raises(ParseError, match="duplicate section"):
         parse_source(source)
+
+
+def test_duplicate_goal_names_parse_fine() -> None:
+    # Duplicate goals are an analyzer error (IFLOW016), not a parse error.
+    source = (
+        "goal G {\n  objective:\n    x\n}\n"
+        "goal G {\n  objective:\n    y\n}\n"
+    )
+    program = parse_source(source)
+    assert len(program.goals) == 2
 
 
 def test_statement_outside_section_is_an_error() -> None:

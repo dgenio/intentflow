@@ -1,126 +1,99 @@
-"""Cognition backends: pluggable engines that propose hypotheses for a plan.
+"""Cognition backends: pluggable engines behind one narrow contract.
 
-The runtime is a phase machine; cognition is a replaceable component behind
-one narrow contract: given a plan and collected evidence, return a
-:class:`Proposal`. Everything else — action gating, calibration, uncertainty
-rules, verification, tracing — happens *outside* the backend, so no backend
-(and no model) can opt out of governance.
+The runtime is a phase machine; cognition is a replaceable component. A
+backend receives the compiled plan, the collected evidence, and the
+assembled (system, user) messages, and returns a :class:`BackendResponse`:
+the raw model text, any parsed JSON, the model name, latency, token usage,
+and finish reason. Everything that makes the process *governed* — action
+gating, calibration, uncertainty rules, verification, tracing — happens
+outside the backend, so no backend (and no model) can opt out of governance.
 
 Backends:
 
-* :class:`SimulatedCognition` (``SimulatorBackend``) — deterministic mock
-  cognition. No network, no flakiness; used to test the language's control
-  structure end to end and as the conformance reference for real backends.
-* :class:`AnthropicCognition` — drives a real Claude model through the
-  staged prompt plan. Requires the optional ``anthropic`` package and an
-  ``ANTHROPIC_API_KEY``.
-* :class:`OpenAICompatibleCognition` (``OpenAICompatibleBackend``) — drives
-  any OpenAI-compatible chat-completions endpoint (OpenAI, Azure, local
-  servers such as vLLM/Ollama-with-OpenAI-shim). Configured purely through
-  environment variables so tests never need a real key.
+* :class:`SimulatedCognition` (``simulate``) — deterministic mock cognition.
+  No network, no flakiness; it honors the goal's typed output schema so the
+  whole pipeline (parse -> verify -> trace) is testable end to end.
+* :class:`MockBackend` (``mock``) — canned responses or raised errors, for
+  tests that need to drive specific runtime paths.
+* :class:`AnthropicCognition` (``anthropic``) — a real Claude model.
+* :class:`OpenAICompatibleCognition` (``openai``) — any OpenAI-compatible
+  chat-completions endpoint (OpenAI, Azure, vLLM, Ollama-with-shim),
+  configured purely through environment variables. It requests structured
+  JSON output (``response_format``) when the endpoint supports it.
+* :class:`ReplayBackend` (``replay``) — answers from a recorded cassette,
+  never the network.
 
-The contract is deliberately provider-agnostic: a backend turns the compiled
-prompt plan into a model call and returns a :class:`Proposal`. Adding a new
-provider (Anthropic, OpenAI-compatible, or a local model) is one class; none
-of them can opt out of the governance that surrounds them.
+No test requires network access or API keys.
 """
 
 from __future__ import annotations
 
 import json
 import os
-from dataclasses import dataclass, field
+import time
+from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any, Protocol
 
 
 @dataclass
-class Hypothesis:
-    """A candidate explanation with self-reported (raw) confidence.
+class BackendResponse:
+    """What a cognition backend returns for one call."""
 
-    ``confidence`` starts equal to ``raw_confidence``; the runtime replaces
-    it with a calibrated value before any uncertainty rule fires.
-    """
-
-    hypothesis_id: str
-    statement: str
-    raw_confidence: float
-    confidence: float
-    citations: list[str] = field(default_factory=list)
+    raw_text: str
+    parsed: dict[str, Any] | None
+    model: str
+    latency_ms: float
+    usage: dict[str, int] | None = None
+    finish_reason: str | None = None
 
     def to_dict(self) -> dict[str, Any]:
-        return {
-            "id": self.hypothesis_id,
-            "statement": self.statement,
-            "raw_confidence": round(self.raw_confidence, 3),
-            "confidence": round(self.confidence, 3),
-            "citations": list(self.citations),
-        }
-
-
-@dataclass
-class Proposal:
-    """What a cognition backend returns: hypotheses plus a remediation text
-    that machine verification checks (e.g. ``requires_phrase``) run against."""
-
-    hypotheses: list[Hypothesis]
-    proposed_fix: str | None = None
+        return asdict(self)
 
 
 class CognitionBackend(Protocol):
     name: str
 
-    def propose(self, plan: dict[str, Any], evidence: list[dict[str, Any]]) -> Proposal:
-        """Propose hypotheses grounded in the collected evidence."""
+    def respond(
+        self,
+        plan: dict[str, Any],
+        evidence: list[dict[str, Any]],
+        system: str,
+        user: str,
+    ) -> BackendResponse:
+        """Produce a response for the assembled messages."""
         ...
 
 
-#: Deterministic raw confidences for simulated hypotheses, in order. The
-#: first two are close together on purpose so 'competing hypotheses'
-#: uncertainty rules have something to react to in demos and tests.
-_MOCK_CONFIDENCES: tuple[float, ...] = (0.68, 0.61, 0.34, 0.22)
+class BackendError(RuntimeError):
+    """A backend failed to produce a response (network, provider, etc.)."""
 
 
-class SimulatedCognition:
-    """Deterministic mock cognition: one hypothesis per evidence item."""
-
-    name = "simulate"
-
-    def propose(self, plan: dict[str, Any], evidence: list[dict[str, Any]]) -> Proposal:
-        sources = evidence or [{"id": None, "source": "general reasoning"}]
-        hypotheses: list[Hypothesis] = []
-        count = max(1, min(len(sources), len(_MOCK_CONFIDENCES)))
-        for i in range(count):
-            source = sources[i % len(sources)]
-            raw = _MOCK_CONFIDENCES[i]
-            hypotheses.append(
-                Hypothesis(
-                    hypothesis_id=f"H{i + 1}",
-                    statement=(
-                        "[simulated] the objective is most plausibly explained "
-                        f"by signals found in {source['source']}"
-                    ),
-                    raw_confidence=raw,
-                    confidence=raw,
-                    citations=[source["id"]] if source["id"] else [],
-                )
-            )
-        top = hypotheses[0]
-        return Proposal(
-            hypotheses=hypotheses,
-            proposed_fix=(
-                f"[simulated] apply targeted fix for {top.hypothesis_id}. "
-                "Rollback: revert to last known good config/commit."
-            ),
-        )
+def strip_code_fences(text: str) -> str:
+    text = text.strip()
+    if text.startswith("```"):
+        text = text.strip("`")
+        if text.lower().startswith("json"):
+            text = text[len("json"):]
+        text = text.strip()
+    return text
 
 
-#: The strict JSON shape every real backend asks the model to emit, so the
-#: result flows into the same calibration/uncertainty/verification machinery.
-_RESPONSE_SCHEMA_INSTRUCTION = (
+def try_parse_json(text: str) -> dict[str, Any] | None:
+    """Best-effort parse of a model reply into a JSON object."""
+    try:
+        payload = json.loads(strip_code_fences(text))
+    except (json.JSONDecodeError, ValueError):
+        return None
+    return payload if isinstance(payload, dict) else None
+
+
+#: The strict JSON shape every backend asks the model to emit, so the result
+#: flows into the same verification/uncertainty machinery.
+RESPONSE_SCHEMA_INSTRUCTION = (
     "Respond with ONLY a JSON object of the form:\n"
-    '{"hypotheses": [{"statement": str, "confidence": float, '
-    '"citations": [str]}], "proposed_fix": str}\n'
+    '{"output": {<the declared output fields>}, "confidence": float, '
+    '"citations": [str], "notes": str}\n'
     "Cite only evidence ids that appear above."
 )
 
@@ -137,77 +110,199 @@ def assemble_messages(
     point: each governance concern was an inspectable unit before it became a
     prompt.
     """
-    steps = {step["phase"]: step["instruction"] for step in plan["prompt_plan"]}
-    system = steps.get("system", "")
+    blocks = {
+        block["phase"]: block["instruction"]
+        for block in plan["prompt_plan"]["blocks"]
+    }
+    system = blocks.get("system", "")
     evidence_json = json.dumps(evidence, indent=2)
     user_parts = [
-        steps.get("objective", ""),
-        steps.get("evidence", ""),
+        blocks.get("objective", ""),
+        blocks.get("evidence", ""),
         f"Collected evidence:\n{evidence_json}",
-        steps.get("actions_allowed", ""),
-        steps.get("actions_denied", ""),
-        steps.get("verify", ""),
-        steps.get("uncertainty", ""),
-        steps.get("output", ""),
-        _RESPONSE_SCHEMA_INSTRUCTION,
+        blocks.get("actions_allowed", ""),
+        blocks.get("actions_denied", ""),
+        blocks.get("verify", ""),
+        blocks.get("uncertainty", ""),
+        blocks.get("output", ""),
+        RESPONSE_SCHEMA_INSTRUCTION,
     ]
     user = "\n\n".join(part for part in user_parts if part)
     return system, user
 
 
-def parse_model_json(
-    text: str, evidence: list[dict[str, Any]]
-) -> Proposal:
-    """Parse a model's JSON reply into a :class:`Proposal`, clamping
-    confidences to [0, 1] and dropping citations to evidence ids that were
-    never collected."""
-    text = text.strip()
-    if text.startswith("```"):
-        text = text.strip("`")
-        if text.startswith("json"):
-            text = text[len("json"):]
-        text = text.strip()
-    payload = json.loads(text)
-    valid_ids = {item["id"] for item in evidence}
-    hypotheses = []
-    for i, hyp in enumerate(payload.get("hypotheses", []), start=1):
-        raw = min(1.0, max(0.0, float(hyp.get("confidence", 0.0))))
-        hypotheses.append(
-            Hypothesis(
-                hypothesis_id=f"H{i}",
-                statement=str(hyp.get("statement", "")),
-                raw_confidence=raw,
-                confidence=raw,
-                citations=[c for c in _as_citation_list(hyp.get("citations")) if c in valid_ids],
-            )
+# ---------------------------------------------------------------------------
+# Simulated cognition (the default backend)
+# ---------------------------------------------------------------------------
+
+#: The deterministic raw confidence the simulator reports.
+SIMULATED_CONFIDENCE = 0.72
+
+
+def _simulated_field_value(
+    field: dict[str, Any], sources: list[str], citations: list[str]
+) -> Any:
+    """A deterministic, type-conformant value for one output field."""
+    name, base = field["name"], field["base"]
+    grounding = ", ".join(sources) if sources else "general reasoning"
+    if base == "number":
+        return SIMULATED_CONFIDENCE if name == "confidence" else 1.0
+    if base == "boolean":
+        return False
+    remediation_field = any(
+        token in name for token in ("fix", "response", "remediation", "recommendation")
+    )
+    if base == "markdown":
+        text = (
+            f"**[simulated]** {name.replace('_', ' ')} grounded in {grounding} "
+            f"(citing {', '.join(citations) or 'no evidence'})."
         )
-    return Proposal(hypotheses=hypotheses, proposed_fix=payload.get("proposed_fix"))
+        if remediation_field:
+            text += " Rollback: revert to the last known good state."
+        return text
+    if base == "list":
+        if field.get("item_type") == "number":
+            return [1.0]
+        return [f"simulated-{name.replace('_', '-')}"]
+    if base == "object":
+        return {"note": f"[simulated] {name} derived from {grounding}"}
+    text = f"[simulated] {name.replace('_', ' ')} based on {grounding}"
+    if remediation_field:
+        text += ". Rollback: revert to the last known good state."
+    return text
 
 
-def _as_citation_list(value: Any) -> list[str]:
-    """Normalize a model's ``citations`` field to a list of ids.
+class SimulatedCognition:
+    """Deterministic mock cognition honoring the goal's typed output schema."""
 
-    Models occasionally return a bare string (``"E1"``) or ``null`` instead of
-    a list; iterating a string would yield characters and garble citations, so
-    coerce defensively."""
-    if value is None:
-        return []
-    if isinstance(value, str):
-        return [value]
-    if isinstance(value, (list, tuple)):
-        return [str(c) for c in value]
-    return []
+    name = "simulate"
+    model_name = "intentflow-simulator"
+
+    def respond(
+        self,
+        plan: dict[str, Any],
+        evidence: list[dict[str, Any]],
+        system: str,
+        user: str,
+    ) -> BackendResponse:
+        citations = [item["id"] for item in evidence if item.get("id")]
+        sources = [item["source"] for item in evidence]
+        output = {
+            field["name"]: _simulated_field_value(field, sources, citations)
+            for field in plan["output_schema"]["fields"]
+        }
+        payload = {
+            "output": output,
+            "confidence": SIMULATED_CONFIDENCE,
+            "citations": citations,
+            "notes": (
+                "[simulated] deterministic response; confidence and content "
+                "do not reflect real reasoning"
+            ),
+        }
+        raw = json.dumps(payload, indent=2)
+        return BackendResponse(
+            raw_text=raw,
+            parsed=payload,
+            model=self.model_name,
+            latency_ms=0.0,
+            usage={
+                "input_tokens": (len(system) + len(user)) // 4,
+                "output_tokens": len(raw) // 4,
+            },
+            finish_reason="stop",
+        )
 
 
-class AnthropicCognition:
-    """Real cognition via the Claude API, behind the same contract.
+class MockBackend:
+    """A backend for tests: returns canned responses or raises.
 
-    The compiled prompt plan's ``system`` block becomes the system prompt;
-    the remaining governed blocks become the user turn. The model is asked
-    for strict JSON so hypotheses, confidences, and citations flow into the
-    same calibration, uncertainty, and verification machinery as simulated
-    runs.
+    ``reply`` may be a dict (serialized to JSON), a raw string, or an
+    exception instance (raised on call). A list of replies is consumed one
+    per call.
     """
+
+    name = "mock"
+
+    def __init__(self, reply: Any = None, model: str = "mock-model") -> None:
+        self._replies = list(reply) if isinstance(reply, list) else [reply]
+        self._model = model
+        self.calls: list[tuple[str, str]] = []
+
+    def respond(
+        self,
+        plan: dict[str, Any],
+        evidence: list[dict[str, Any]],
+        system: str,
+        user: str,
+    ) -> BackendResponse:
+        self.calls.append((system, user))
+        reply = self._replies.pop(0) if len(self._replies) > 1 else self._replies[0]
+        if isinstance(reply, Exception):
+            raise reply
+        if isinstance(reply, dict):
+            raw = json.dumps(reply)
+            parsed: dict[str, Any] | None = reply
+        else:
+            raw = str(reply or "")
+            parsed = try_parse_json(raw)
+        return BackendResponse(
+            raw_text=raw,
+            parsed=parsed,
+            model=self._model,
+            latency_ms=0.0,
+            usage=None,
+            finish_reason="stop",
+        )
+
+
+# ---------------------------------------------------------------------------
+# Real backends (chat-based)
+# ---------------------------------------------------------------------------
+
+
+class _ChatBackend:
+    """Shared ``respond`` for backends built around ``complete(system, user)``.
+
+    Subclasses set ``model_name`` and may fill ``last_usage`` /
+    ``last_finish_reason`` inside ``complete``.
+    """
+
+    name = "chat"
+    model_name = "unknown"
+    last_usage: dict[str, int] | None = None
+    last_finish_reason: str | None = None
+
+    def complete(self, system: str, user: str) -> str:  # pragma: no cover - abstract
+        raise NotImplementedError
+
+    def respond(
+        self,
+        plan: dict[str, Any],
+        evidence: list[dict[str, Any]],
+        system: str,
+        user: str,
+    ) -> BackendResponse:
+        start = time.perf_counter()
+        try:
+            text = self.complete(system, user)
+        except (NotImplementedError, BackendError):
+            raise
+        except Exception as exc:  # provider/network errors become BackendError
+            raise BackendError(f"backend {self.name!r} failed: {exc}") from exc
+        latency = (time.perf_counter() - start) * 1000.0
+        return BackendResponse(
+            raw_text=text,
+            parsed=try_parse_json(text),
+            model=self.model_name,
+            latency_ms=round(latency, 2),
+            usage=self.last_usage,
+            finish_reason=self.last_finish_reason,
+        )
+
+
+class AnthropicCognition(_ChatBackend):
+    """Real cognition via the Claude API, behind the same contract."""
 
     name = "anthropic"
 
@@ -225,6 +320,7 @@ class AnthropicCognition:
             )
         self._client = anthropic.Anthropic()
         self._model = model
+        self.model_name = model
         self._max_tokens = max_tokens
 
     def complete(self, system: str, user: str) -> str:
@@ -234,28 +330,30 @@ class AnthropicCognition:
             system=system,
             messages=[{"role": "user", "content": user}],
         )
+        usage = getattr(response, "usage", None)
+        if usage is not None:
+            self.last_usage = {
+                "input_tokens": getattr(usage, "input_tokens", 0),
+                "output_tokens": getattr(usage, "output_tokens", 0),
+            }
+        self.last_finish_reason = getattr(response, "stop_reason", None)
         return "".join(
             block.text for block in response.content if block.type == "text"
         )
 
-    def propose(self, plan: dict[str, Any], evidence: list[dict[str, Any]]) -> Proposal:
-        system, user_message = assemble_messages(plan, evidence)
-        return parse_model_json(self.complete(system, user_message), evidence)
 
-
-class OpenAICompatibleCognition:
+class OpenAICompatibleCognition(_ChatBackend):
     """Real cognition via any OpenAI-compatible chat-completions endpoint.
 
     Configured entirely through the environment so nothing here needs a key
-    at import or construction time in tests until a call is actually made:
+    at import time:
 
     * ``OPENAI_API_KEY``  — required to make a request (clear error if absent)
     * ``OPENAI_BASE_URL`` — optional; point at Azure, vLLM, Ollama, etc.
     * ``OPENAI_MODEL``    — optional; defaults to ``gpt-4o-mini``
 
-    The same staged prompt plan drives the call, and the reply is parsed into
-    the same :class:`Proposal` shape, so governance is identical to every
-    other backend.
+    Structured JSON output is requested via ``response_format`` when the
+    endpoint supports it (falls back transparently when it does not).
     """
 
     name = "openai"
@@ -280,26 +378,39 @@ class OpenAICompatibleCognition:
             api_key=api_key, base_url=os.environ.get("OPENAI_BASE_URL") or None
         )
         self._model = model or os.environ.get("OPENAI_MODEL") or "gpt-4o-mini"
+        self.model_name = self._model
         self._max_tokens = max_tokens
 
     def complete(self, system: str, user: str) -> str:
-        response = self._client.chat.completions.create(
-            model=self._model,
-            max_tokens=self._max_tokens,
-            response_format={"type": "json_object"},
-            messages=[
-                {"role": "system", "content": system},
-                {"role": "user", "content": user},
-            ],
-        )
-        return response.choices[0].message.content or ""
+        messages = [
+            {"role": "system", "content": system},
+            {"role": "user", "content": user},
+        ]
+        try:
+            response = self._client.chat.completions.create(
+                model=self._model,
+                max_tokens=self._max_tokens,
+                response_format={"type": "json_object"},
+                messages=messages,
+            )
+        except Exception:
+            # Some OpenAI-compatible servers reject response_format; retry
+            # without it before giving up.
+            response = self._client.chat.completions.create(
+                model=self._model, max_tokens=self._max_tokens, messages=messages
+            )
+        usage = getattr(response, "usage", None)
+        if usage is not None:
+            self.last_usage = {
+                "input_tokens": getattr(usage, "prompt_tokens", 0),
+                "output_tokens": getattr(usage, "completion_tokens", 0),
+            }
+        choice = response.choices[0]
+        self.last_finish_reason = getattr(choice, "finish_reason", None)
+        return choice.message.content or ""
 
-    def propose(self, plan: dict[str, Any], evidence: list[dict[str, Any]]) -> Proposal:
-        system, user_message = assemble_messages(plan, evidence)
-        return parse_model_json(self.complete(system, user_message), evidence)
 
-
-def provider_chat(name: str) -> "Any":
+def provider_chat(name: str) -> Any:
     """Return a ``(system, user) -> text`` callable for a real provider,
     reused by the LLM judge. Raises the provider's clear error if it is not
     configured."""
@@ -322,9 +433,9 @@ class CassetteMiss(RuntimeError):
 class Cassette:
     """A JSON file mapping a request fingerprint to a recorded raw reply.
 
-    Cassettes let the OpenAI/Anthropic *parsing and governance* path be tested
-    in CI with real recorded responses and no API key: record once against a
-    live (or fake) provider, replay deterministically thereafter.
+    Cassettes let the real-backend *parsing and governance* path be tested in
+    CI with recorded responses and no API key: record once against a live (or
+    fake) provider, replay deterministically thereafter.
     """
 
     def __init__(self, path: str | Path, entries: dict[str, str] | None = None) -> None:
@@ -359,14 +470,11 @@ class Cassette:
         self.entries[self.key(system, user)] = reply
 
 
-class ReplayBackend:
-    """A cognition backend that answers from a cassette — never the network.
-
-    Used in tests/CI to exercise the real parsing and governance path against
-    recorded responses without any credentials.
-    """
+class ReplayBackend(_ChatBackend):
+    """A cognition backend that answers from a cassette — never the network."""
 
     name = "replay"
+    model_name = "replay-cassette"
 
     def __init__(self, cassette: Cassette) -> None:
         self._cassette = cassette
@@ -380,12 +488,8 @@ class ReplayBackend:
             )
         return reply
 
-    def propose(self, plan: dict[str, Any], evidence: list[dict[str, Any]]) -> Proposal:
-        system, user = assemble_messages(plan, evidence)
-        return parse_model_json(self.complete(system, user), evidence)
 
-
-class RecordingBackend:
+class RecordingBackend(_ChatBackend):
     """Wrap any backend with a ``complete`` method, persisting every raw reply
     to a cassette (replaying recorded ones to stay deterministic)."""
 
@@ -393,19 +497,18 @@ class RecordingBackend:
         self._inner = inner
         self._cassette = cassette
         self.name = f"record:{getattr(inner, 'name', 'backend')}"
+        self.model_name = getattr(inner, "model_name", "unknown")
 
     def complete(self, system: str, user: str) -> str:
         cached = self._cassette.get(system, user)
         if cached is not None:
             return cached
         reply = self._inner.complete(system, user)
+        self.last_usage = getattr(self._inner, "last_usage", None)
+        self.last_finish_reason = getattr(self._inner, "last_finish_reason", None)
         self._cassette.put(system, user, reply)
         self._cassette.save()
         return reply
-
-    def propose(self, plan: dict[str, Any], evidence: list[dict[str, Any]]) -> Proposal:
-        system, user = assemble_messages(plan, evidence)
-        return parse_model_json(self.complete(system, user), evidence)
 
 
 #: Discoverability aliases matching the conceptual backend names.
@@ -415,6 +518,7 @@ OpenAICompatibleBackend = OpenAICompatibleCognition
 #: Backends selectable from the CLI's ``--backend`` flag.
 BACKENDS: dict[str, type] = {
     "simulate": SimulatedCognition,
+    "mock": MockBackend,
     "anthropic": AnthropicCognition,
     "openai": OpenAICompatibleCognition,
 }

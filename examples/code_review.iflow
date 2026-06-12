@@ -1,46 +1,49 @@
-# Review a pull request as a governed process, not a vibe check.
-# Demonstrates: denied actions, approval gating, evidence-cited findings.
-
+# Review a code diff as a governed process.
+#
+# Demonstrates: read-only allowed actions, an approval gate on the only
+# outward action (posting the review), and typed structured output a
+# review tool could consume directly.
 goal ReviewPullRequest {
+  meta:
+    description "governed code review of one pull request"
+
   objective:
-    review the proposed change for correctness regressions and risky behavior
+    review the diff for correctness and risk and produce a reviewer-ready report
 
   context:
     max_tokens 16000
-    prefer changed_files
-    preserve reviewer_guidelines
+    prefer diff
+    preserve style_guide
 
   evidence:
     require diff
     require test_results
-    require style_guide
-    prefer related_issue_history
-    distrust author_self_assessment
+    optional style_guide
+    distrust author_claims
 
   model:
-    propose findings with confidence
     separate observation from inference
-    classify each finding as bug, risk, or style
+    flag risky changes explicitly
 
   actions:
     allow read_diff
-    allow run_tests
-    allow read_ci_logs
-    require_approval push_changes
-    deny force_push
+    allow inspect_code
+    require_approval post_comment
+    deny merge_pull_request
 
   verify:
-    each finding must cite diff evidence
-    blocking findings must include a suggested remedy
-    test claims must match test_results evidence
+    require cites_evidence
+    require findings_reference_changed_lines
+    check confidence >= 0.6
 
   uncertainty:
     if confidence < 0.6 ask_human
-    if competing_hypotheses remain run_discriminating_test
+    if missing_evidence ask_human
 
   output:
-    findings
-    risk
-    recommendation
-    confidence
+    summary: string
+    findings: list[string]
+    confidence: number
+    approval_recommendation: string
+    blocking_issues: list[string]
 }

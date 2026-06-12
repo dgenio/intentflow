@@ -1,0 +1,10 @@
+--- a/worker/retry.py
++++ b/worker/retry.py
+@@ -12,7 +12,7 @@ def retry(task, attempts=3):
+-    for attempt in range(attempts):
++    for attempt in range(attempts + 1):
+         try:
+             return task()
+         except TransientError:
+-            sleep(2 ** attempt)
++            sleep(2 ** attempt * 0.1)

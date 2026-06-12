@@ -2,7 +2,6 @@
 # Demonstrates goal composition with a statically checked evidence chain:
 # ProposeRemediation requires DiagnoseIncident.root_cause, which the
 # compiler verifies is produced by an earlier stage.
-
 goal DiagnoseIncident {
   objective:
     identify the most likely root cause of the reported incident
@@ -25,15 +24,14 @@ goal DiagnoseIncident {
     allow inspect_code
 
   verify:
-    each hypothesis must cite evidence
+    require cites_evidence
 
   uncertainty:
-    if confidence < 0.7 ask_human
-    if competing_hypotheses remain run_discriminating_test
+    if confidence < 0.6 ask_human
 
   output:
-    root_cause
-    confidence
+    root_cause: string
+    confidence: number
 }
 
 goal ProposeRemediation {
@@ -57,16 +55,16 @@ goal ProposeRemediation {
     require_approval deploy_change
 
   verify:
-    each hypothesis must cite evidence
+    require cites_evidence
     proposed fix must include rollback path
 
   uncertainty:
     if confidence < 0.6 ask_human
 
   output:
-    recommended_fix
-    risk
-    confidence
+    recommended_fix: markdown
+    risk: string
+    confidence: number
 }
 
 pipeline IncidentResponse {

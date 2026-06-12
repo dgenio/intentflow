@@ -14,13 +14,19 @@ JUDGED_SRC = (
     "goal G {\n  objective:\n    answer well\n"
     "  evidence:\n    require notes\n"
     "  verify:\n    the answer must be tasteful\n"
-    "  output:\n    answer\n}\n"
+    "  output:\n    answer: string\n}\n"
 )
 
 
 def _run(judge=None) -> dict:
     plan = compile_goal(parse_source(JUDGED_SRC).goals[0]).to_dict()
     return GoalRuntime(plan, printer=None, judge=judge).run()
+
+
+def _judged_check(result: dict) -> dict:
+    return next(
+        c for c in result["verification"]["checks"] if c["mode"] == "judged"
+    )
 
 
 def test_simulated_judge_passes_by_default() -> None:
@@ -46,38 +52,41 @@ def test_llm_judge_parses_fenced_json() -> None:
 
 def test_without_judge_judged_rules_are_skipped_not_passed() -> None:
     result = _run(judge=None)
-    check = result["verification"]["checks"][0]
-    assert check["mode"] == "judged"
+    check = _judged_check(result)
     assert check["status"] == "skipped"
     assert "judged_by" not in check
+    # A skipped judged rule does not block completion...
+    assert result["verification"]["passed"] is True
 
 
 def test_judge_can_pass_a_judged_rule() -> None:
     result = _run(judge=SimulatedJudge(default_pass=True))
-    check = result["verification"]["checks"][0]
+    check = _judged_check(result)
     assert check["status"] == "pass"
     assert check["judged_by"] == "simulate-judge"
     assert result["verification"]["passed"] is True
 
 
-def test_judge_can_fail_a_judged_rule_and_block_verification() -> None:
+def test_judge_can_fail_a_judged_rule_and_fail_the_run() -> None:
     result = _run(judge=SimulatedJudge(overrides={"tasteful": False}))
-    check = result["verification"]["checks"][0]
+    check = _judged_check(result)
     assert check["status"] == "fail"
     assert result["verification"]["passed"] is False
+    assert result["status"] == "failed_verification"
 
 
 def test_verification_keeps_machine_and_judged_tiers_separate() -> None:
-    # A goal with one machine check (cite) and one judged check.
+    # A goal with one machine check (cite) and one judged check (plus the
+    # implicit V0 schema machine check).
     src = (
         "goal G {\n  objective:\n    x\n  evidence:\n    require notes\n"
-        "  verify:\n    each claim must cite evidence\n    must be tasteful\n"
-        "  output:\n    answer\n}\n"
+        "  verify:\n    require cites_evidence\n    must be tasteful\n"
+        "  output:\n    answer: string\n}\n"
     )
     plan = compile_goal(parse_source(src).goals[0]).to_dict()
     result = GoalRuntime(plan, printer=None, judge=SimulatedJudge()).run()
     tiers = result["verification"]["tiers"]
-    assert tiers["machine"]["total"] == 1
+    assert tiers["machine"]["total"] == 2  # V0 schema + cites_evidence
     assert tiers["judged"]["total"] == 1
     assert tiers["judged"]["passed"] == 1
 

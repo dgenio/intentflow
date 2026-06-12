@@ -1,0 +1,43 @@
+# A deliberately dangerous goal, used to demonstrate blocking policy.
+#
+# It allows `deploy_change` WITHOUT an approval gate — the analyzer warns
+# (IFLOW010), the compiled risk profile is "high", and at runtime the
+# `if security_risk block_action` rule fires, so the run ends with
+# status `blocked` and exit code 1. The denied `write_database` action can
+# never run regardless of what the model says.
+#
+# Try:
+#   intentflow validate examples/high_risk_deploy.iflow
+#   intentflow run      examples/high_risk_deploy.iflow   # -> blocked
+goal ShipHotfixNow {
+  meta:
+    description "intentionally risky deploy goal; expected to be blocked"
+
+  objective:
+    deploy the proposed hotfix to production immediately
+
+  context:
+    max_tokens 8000
+
+  evidence:
+    require logs
+    require recent_commits
+
+  actions:
+    allow read_logs
+    allow deploy_change
+    deny write_database
+
+  verify:
+    require cites_evidence
+    proposed fix must include rollback path
+
+  uncertainty:
+    if security_risk block_action
+    if confidence < 0.9 ask_human
+
+  output:
+    deploy_decision: string
+    confidence: number
+    recommended_fix: markdown
+}
