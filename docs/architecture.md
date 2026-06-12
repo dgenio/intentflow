@@ -162,28 +162,6 @@ parsing/governance path CI coverage without credentials.
 
 ## Future directions
 
-Already shipped: blocking approval gates (TTY/webhook), the LLM-judge runner
-with a separate trust tier, hash-chained + HMAC-signed traces, the Python
-embedding API with governed Python tools, and recorded (cassette) backends.
-Still ahead:
+Roadmap ownership now lives in [ROADMAP.md](../ROADMAP.md).
 
-- **Learned confidence calibration.** Replace the shrinkage placeholder
-  with a calibration map learned from scored historical runs (held-out
-  scoring, ensembling, verifier models), per backend and per domain.
-- **Richer verification predicates.** Grow the machine-checkable vocabulary
-  beyond `cites_evidence` / `requires_phrase` / `threshold_check`
-  (`consistent_with(source)`, numeric bounds on outputs).
-- **Memory/context compiler.** Lower `context:` policy into concrete
-  behavior: retrieval priorities for `prefer`, eviction immunity for
-  `preserve`, hard budget enforcement for `max_tokens`.
-- **DAG execution.** Pipelines are linear today with statically checked
-  evidence chains; generalize to DAGs with fan-out/fan-in and the same
-  static guarantees.
-- **Asynchronous approval.** Generalize the synchronous webhook approver to
-  issue-and-resume (callback/polling) approval.
-- **Public-key trace signatures.** Add Ed25519 signing alongside today's
-  HMAC, so witnesses are verifiable by parties who do not share the secret.
-- **Compiler optimizations.** Because cost, latency, and risk are visible in
-  the IR, they are optimizable: token-budget-aware evidence ordering, phase
-  fusion when no gate separates them, early-exit when confidence already
-  exceeds every threshold, and risk-weighted scheduling of approval gates.
+This document stays focused on architecture and runtime contracts.
