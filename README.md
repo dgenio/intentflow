@@ -222,6 +222,14 @@ report = intentflow.audit_document(program.compile(), result)
 assert report["conformant"]
 ```
 
+Six examples ship with the repo: `examples/code_review.iflow`,
+`examples/high_risk_deploy.iflow`, `examples/incident_pipeline.iflow`,
+`examples/opensource_triage.iflow`, `examples/production_diagnosis.iflow`,
+and `examples/research_synthesis.iflow`, plus `examples/workspace/` with
+real evidence files for governed collection. The test suite runs every
+example against that workspace so required evidence sources stay backed by
+files instead of simulated placeholders.
+
 ## Design philosophy
 
 The honest objection to any "agent DSL" is: *couldn't this be a Python

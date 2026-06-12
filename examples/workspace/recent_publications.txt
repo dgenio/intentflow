@@ -1,0 +1,6 @@
+Recent publication notes:
+
+- Audit-trail papers emphasize that evidence links and immutable traces are
+  useful only when verification can replay decisions independently.
+- Agent evaluation reports warn that confidence without cited evidence is hard
+  to compare across model providers.
