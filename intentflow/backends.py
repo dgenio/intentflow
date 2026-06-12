@@ -73,7 +73,7 @@ def strip_code_fences(text: str) -> str:
     text = text.strip()
     if text.startswith("```"):
         text = text.strip("`")
-        if text.startswith("json"):
+        if text.lower().startswith("json"):
             text = text[len("json"):]
         text = text.strip()
     return text
@@ -504,6 +504,8 @@ class RecordingBackend(_ChatBackend):
         if cached is not None:
             return cached
         reply = self._inner.complete(system, user)
+        self.last_usage = getattr(self._inner, "last_usage", None)
+        self.last_finish_reason = getattr(self._inner, "last_finish_reason", None)
         self._cassette.put(system, user, reply)
         self._cassette.save()
         return reply

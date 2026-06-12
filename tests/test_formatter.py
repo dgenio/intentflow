@@ -113,3 +113,17 @@ def test_examples_are_already_formatted() -> None:
     for path in sorted(Path("examples").glob("*.iflow")):
         original = path.read_text(encoding="utf-8")
         assert format_file(path) == original, f"{path} is not canonically formatted"
+
+
+def test_format_normalizes_output_fields_with_inline_comments() -> None:
+    src = (
+        "goal G {\n"
+        "  output:\n"
+        "    result:string # this is a comment\n"
+        "    confidence:  number  # another comment\n"
+        "}\n"
+    )
+    formatted = format_source(src)
+    lines = formatted.splitlines()
+    assert "    result: string # this is a comment" in lines
+    assert "    confidence: number # another comment" in lines

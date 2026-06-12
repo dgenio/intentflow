@@ -127,3 +127,8 @@ def test_try_parse_json_strips_code_fences() -> None:
     assert try_parse_json('{"a": 1}') == {"a": 1}
     assert try_parse_json("not json at all") is None
     assert try_parse_json("[1, 2]") is None  # must be an object
+
+
+def test_try_parse_json_strips_uppercase_json_fence() -> None:
+    assert try_parse_json('```JSON\n{"a": 1}\n```') == {"a": 1}
+    assert try_parse_json('```Json\n{"a": 1}\n```') == {"a": 1}

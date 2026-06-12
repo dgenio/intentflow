@@ -29,7 +29,7 @@ from intentflow.iflow_ast import SECTION_NAMES
 from intentflow.parser import _GOAL_RE, _PIPELINE_RE, _SECTION_RE, _STAGE_RE
 
 _INDENT = "  "
-_OUTPUT_FIELD_SPACING_RE = re.compile(r"^([A-Za-z_][A-Za-z0-9_]*)\s*:\s*(\S+)$")
+_OUTPUT_FIELD_SPACING_RE = re.compile(r"^([A-Za-z_][A-Za-z0-9_]*)\s*:\s*(\S+)(\s*#.*)?$")
 _SECTION_ORDER = {name: i for i, name in enumerate(SECTION_NAMES)}
 
 
@@ -70,7 +70,10 @@ def _normalize_statement(text: str, section: str | None) -> str:
     if section == "output":
         match = _OUTPUT_FIELD_SPACING_RE.match(text)
         if match:
-            return f"{match.group(1)}: {match.group(2)}"
+            comment = (match.group(3) or "").lstrip()
+            if comment:
+                comment = " " + comment
+            return f"{match.group(1)}: {match.group(2)}{comment}"
     return _collapse_spaces(text)
 
 

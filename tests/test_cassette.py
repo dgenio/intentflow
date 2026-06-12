@@ -98,3 +98,18 @@ def test_make_backend_replay_with_cassette(tmp_path) -> None:
     Cassette(cpath).save()
     backend = make_backend("replay", cpath)
     assert isinstance(backend, ReplayBackend)
+
+
+def test_recording_backend_propagates_usage_metadata(tmp_path) -> None:
+    cpath = tmp_path / "c.json"
+    doc = _doc()
+    plan = doc["goals"][0]
+    provider = _FakeProvider()
+    provider.last_usage = {"input_tokens": 42, "output_tokens": 7}
+    provider.last_finish_reason = "stop"
+    backend = RecordingBackend(provider, Cassette.load(cpath))
+    result = GoalRuntime(plan, backend=backend, printer=None,
+                         workspace="examples/workspace").run()
+    assert provider.calls == 1
+    assert backend.last_usage == {"input_tokens": 42, "output_tokens": 7}
+    assert backend.last_finish_reason == "stop"
