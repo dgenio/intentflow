@@ -346,6 +346,22 @@ tests/            parser, compiler, runtime, tools, pipeline, lint, audit, CLI,
 docs/             architecture notes
 ```
 
+## Citing IntentFlow
+
+IntentFlow includes [`CITATION.cff`](CITATION.cff) so GitHub can render
+repository citation metadata. For papers and reports, cite the repository
+version you used. For example:
+
+```bibtex
+@software{intentflow,
+  title = {IntentFlow},
+  author = {{IntentFlow contributors}},
+  version = {0.4.0},
+  url = {https://github.com/dgenio/intentflow},
+  note = {An experimental language for governed cognitive processes}
+}
+```
+
 ## License
 
 MIT.
