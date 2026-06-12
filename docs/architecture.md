@@ -2,7 +2,7 @@
 
 ## The conceptual stack
 
-```
+```text
 Human intent
     ↓
 IntentFlow source (.iflow)        — declarative, reviewable, diffable

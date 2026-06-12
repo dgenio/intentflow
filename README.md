@@ -307,7 +307,7 @@ For the architecture model and design notes, see
 
 ## Project layout
 
-```
+```text
 intentflow/
   __init__.py     public API
   iflow_ast.py    syntactic AST + cognitive IR nodes
