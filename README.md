@@ -219,7 +219,7 @@ format that agree with each other — which is exactly what IntentFlow is.
   goal's sections, actions, evidence, output fields, and warnings.
 - **CLI**: `parse`, `validate` (`--json`), `lint`, `compile`, `inspect`,
   `format` (`--check` / `--write`), `run` (`--backend simulate|anthropic|openai|replay`,
-  `--judge`, `--approve` / `--approve-interactive` / `--approve-webhook`,
+  `--goal`, `--pipeline`, `--judge`, `--approve` / `--approve-interactive` / `--approve-webhook`,
   `--sign-trace`, `--cassette` / `--record-cassette`, `--trace-dir`), `audit`.
 
 ## Install & use
@@ -246,6 +246,10 @@ intentflow audit examples/diagnose.iflow traces/DiagnoseProductionIssue-*.json
 # composed goals with a statically checked evidence chain:
 intentflow run examples/incident_pipeline.iflow --simulate \
     --pipeline IncidentResponse
+
+# or run one standalone goal from a multi-goal file:
+intentflow run examples/incident_pipeline.iflow --simulate \
+    --goal DiagnoseIncident
 
 # real model cognition behind the same governance:
 intentflow run examples/diagnose.iflow --backend anthropic   # ANTHROPIC_API_KEY

@@ -9,6 +9,7 @@ Commands:
     intentflow inspect <file>          summarize goals, actions, evidence, warnings
     intentflow format <file>           canonically reformat (--check / --write)
     intentflow run <file>              execute (defaults to the simulate backend)
+    intentflow run <file> --goal NAME          execute one standalone goal
     intentflow run <file> --backend openai      execute with a real model
     intentflow run <file> --trace-dir traces/    save an inspectable witness
     intentflow audit <file> <result>   verify a run's trace against the plan
@@ -222,8 +223,19 @@ def cmd_run(args: argparse.Namespace) -> int:
         )
         results = [result]
     else:
+        plans = document["plans"]
+        if args.goal:
+            plans_by_goal = {plan["goal"]: plan for plan in plans}
+            if args.goal not in plans_by_goal:
+                print(
+                    f"error: unknown goal {args.goal!r}; "
+                    f"available: {sorted(plans_by_goal)}",
+                    file=sys.stderr,
+                )
+                return 1
+            plans = [plans_by_goal[args.goal]]
         results = []
-        for plan in document["plans"]:
+        for plan in plans:
             runtime = GoalRuntime(
                 plan,
                 backend=backend,
@@ -375,8 +387,12 @@ def build_parser() -> argparse.ArgumentParser:
         choices=sorted(BACKENDS) + ["replay"],
         help="cognition backend (default: simulate; 'replay' needs --cassette)",
     )
-    p_run.add_argument(
+    run_target = p_run.add_mutually_exclusive_group()
+    run_target.add_argument(
         "--pipeline", help="run a named pipeline instead of standalone goals"
+    )
+    run_target.add_argument(
+        "--goal", metavar="NAME", help="run one named standalone goal"
     )
     p_run.add_argument(
         "--workspace",
