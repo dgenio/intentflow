@@ -224,6 +224,10 @@ format that agree with each other — which is exactly what IntentFlow is.
 
 ## Install & use
 
+The core package is intentionally dependency-free; see
+[`docs/architecture.md#zero-runtime-dependency-core`](docs/architecture.md#zero-runtime-dependency-core)
+for the policy and test guard.
+
 ```bash
 pip install -e ".[dev]"          # add llm/openai extras for real backends:
 #   pip install -e ".[dev,llm]"     -> Anthropic backend
