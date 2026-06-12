@@ -265,15 +265,14 @@ linear. The simulator mocks cognition; it never pretends otherwise.
 
 ## Roadmap
 
-Learned calibration, a context/memory compiler, executable uncertainty
-actions, richer machine verification predicates, typed object schemas, DAG
-pipelines, asynchronous approvals, Ed25519 trace signatures, real governed
-tool execution, and editor support — details in
-[`docs/roadmap.md`](docs/roadmap.md).
+Roadmap ownership now lives in [ROADMAP.md](ROADMAP.md).
+
+For the architecture model and design notes, see
+[`docs/architecture.md`](docs/architecture.md).
 
 ## Project layout
 
-```
+```text
 intentflow/
   iflow_ast.py    syntactic AST + typed cognitive IR (JSON-serializable)
   parser.py       .iflow -> AST (line/column errors, strings, comments)
