@@ -256,6 +256,31 @@ intentflow run examples/diagnose.iflow --backend openai      # OPENAI_API_KEY,
 python -m pytest                                  # run the test suite
 ```
 
+### Shell completions
+
+Static completion scripts are checked in under `completions/`:
+
+```bash
+# bash
+mkdir -p ~/.local/share/bash-completion/completions
+cp completions/intentflow.bash ~/.local/share/bash-completion/completions/intentflow
+
+# zsh
+mkdir -p ~/.zsh/completions
+cp completions/intentflow.zsh ~/.zsh/completions/_intentflow
+# then ensure ~/.zsh/completions is on fpath before compinit
+
+# fish
+mkdir -p ~/.config/fish/completions
+cp completions/intentflow.fish ~/.config/fish/completions/intentflow.fish
+```
+
+Regenerate the scripts after CLI parser changes with:
+
+```bash
+python scripts/generate_completions.py
+```
+
 ### Use from Python
 
 ```python
