@@ -104,6 +104,27 @@ backend:
    confidences and re-ranks. Rules without an evaluator are recorded, never
    silently dropped.
 
+#### Simulation heuristics
+
+The deterministic simulation path carries a small set of named runtime
+heuristics so later calibration work can replace them intentionally:
+
+- `_COMPETING_MARGIN = 0.15` defines when two hypotheses are close enough for
+  a `competing_hypotheses` symbolic rule to trigger.
+- `_DISCRIMINATING_TEST_CONFIDENCE_BOOST = 0.18` and
+  `_DISCRIMINATING_TEST_CONFIDENCE_PENALTY = 0.10` model the simulated
+  discriminating test's support for the top hypothesis and pushback on the
+  runner-up.
+- `_DISCRIMINATING_TEST_CONFIDENCE_CEILING = 0.95`,
+  `_DISCRIMINATING_TEST_CONFIDENCE_FLOOR = 0.05`, and
+  `_DISCRIMINATING_TEST_CONFIDENCE_PRECISION = 4` keep simulated confidence
+  updates bounded and trace-stable.
+
+`_apply_symbolic_rule` currently evaluates only `competing_hypotheses`.
+Other symbolic conditions are recorded as `rule_not_simulated` audit events.
+These values are placeholders for future calibration and relocation work; the
+tests pin them so any behavior change is explicit.
+
 ### Composition (`pipeline` blocks)
 
 Goals compose into linear pipelines. A later stage may require

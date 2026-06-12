@@ -26,7 +26,7 @@ from typing import Any, Callable
 
 from intentflow.backends import CognitionBackend, Hypothesis, SimulatedCognition
 from intentflow.judges import Judge
-from intentflow.tools import ActionDenied, ActionGate, ApprovalError, Approver, ToolError, ToolRegistry
+from intentflow.tools import ActionDenied, ActionGate, Approver, ToolError, ToolRegistry
 
 #: The phase order every conformant run must follow (checked by the auditor).
 CANONICAL_PHASES: tuple[str, ...] = (
@@ -41,6 +41,21 @@ CANONICAL_PHASES: tuple[str, ...] = (
 
 #: Two hypotheses are 'competing' when their confidences are this close.
 _COMPETING_MARGIN = 0.15
+
+#: Simulated discriminating tests add this much confidence to the supported hypothesis.
+_DISCRIMINATING_TEST_CONFIDENCE_BOOST = 0.18
+
+#: Simulated discriminating tests subtract this much confidence from the runner-up.
+_DISCRIMINATING_TEST_CONFIDENCE_PENALTY = 0.10
+
+#: Simulated test confidence cannot exceed this ceiling.
+_DISCRIMINATING_TEST_CONFIDENCE_CEILING = 0.95
+
+#: Simulated test confidence cannot fall below this floor.
+_DISCRIMINATING_TEST_CONFIDENCE_FLOOR = 0.05
+
+#: Confidence adjustments are rounded here so traces stay stable across runtimes.
+_DISCRIMINATING_TEST_CONFIDENCE_PRECISION = 4
 
 _OPS: dict[str, Callable[[float, float], bool]] = {
     "<": operator.lt,
@@ -417,8 +432,20 @@ class GoalRuntime:
             self.trace.record("uncertainty", "human_escalation", escalation)
         elif action == "run_discriminating_test" and len(self.hypotheses) >= 2:
             top, second = self.hypotheses[0], self.hypotheses[1]
-            top.confidence = min(0.95, round(top.confidence + 0.18, 4))
-            second.confidence = max(0.05, round(second.confidence - 0.10, 4))
+            top.confidence = min(
+                _DISCRIMINATING_TEST_CONFIDENCE_CEILING,
+                round(
+                    top.confidence + _DISCRIMINATING_TEST_CONFIDENCE_BOOST,
+                    _DISCRIMINATING_TEST_CONFIDENCE_PRECISION,
+                ),
+            )
+            second.confidence = max(
+                _DISCRIMINATING_TEST_CONFIDENCE_FLOOR,
+                round(
+                    second.confidence - _DISCRIMINATING_TEST_CONFIDENCE_PENALTY,
+                    _DISCRIMINATING_TEST_CONFIDENCE_PRECISION,
+                ),
+            )
             detail = {
                 "test": f"[simulated] discriminating test between {top.hypothesis_id} "
                 f"and {second.hypothesis_id}",
