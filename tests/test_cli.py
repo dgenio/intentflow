@@ -55,6 +55,59 @@ def test_run_simulate_emits_result_and_trace(capsys: pytest.CaptureFixture[str])
     assert result["summary"]["verification_status"] in ("passed", "failed")
 
 
+def test_run_goal_selects_one_goal(capsys: pytest.CaptureFixture[str]) -> None:
+    code = main(
+        [
+            "run",
+            "examples/incident_pipeline.iflow",
+            "--simulate",
+            "--goal",
+            "DiagnoseIncident",
+        ]
+    )
+    assert code == 0
+    out = capsys.readouterr().out
+    assert out.count("=== final result ===") == 1
+    result = _result_json(out)
+    assert result["goal"] == "DiagnoseIncident"
+    assert "ProposeRemediation" not in out
+
+
+def test_run_goal_reports_available_goals(capsys: pytest.CaptureFixture[str]) -> None:
+    code = main(
+        [
+            "run",
+            "examples/incident_pipeline.iflow",
+            "--simulate",
+            "--goal",
+            "MissingGoal",
+        ]
+    )
+    assert code == 1
+    err = capsys.readouterr().err
+    assert "unknown goal 'MissingGoal'" in err
+    assert "DiagnoseIncident" in err
+    assert "ProposeRemediation" in err
+
+
+def test_run_goal_is_mutually_exclusive_with_pipeline(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    with pytest.raises(SystemExit) as exc_info:
+        main(
+            [
+                "run",
+                "examples/incident_pipeline.iflow",
+                "--goal",
+                "DiagnoseIncident",
+                "--pipeline",
+                "IncidentResponse",
+            ]
+        )
+    assert exc_info.value.code == 2
+    assert "not allowed with argument" in capsys.readouterr().err
+
+
 def test_parse_error_exits_2(tmp_path, capsys: pytest.CaptureFixture[str]) -> None:
     bad = tmp_path / "bad.iflow"
     bad.write_text("not a goal\n")
