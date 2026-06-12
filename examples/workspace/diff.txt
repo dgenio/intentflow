@@ -1,0 +1,9 @@
+diff --git a/src/config.py b/src/config.py
+@@
+-cache_dir = settings.get("cache_dir", ".cache")
++cache_dir = settings["cache_dir"]
+
+diff --git a/docs/migration.md b/docs/migration.md
+@@
+  ## Upgrading from 0.3.x
+  No configuration changes are required for existing installations.

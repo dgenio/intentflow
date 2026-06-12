@@ -1,0 +1,6 @@
+Replication study notes:
+
+- Reproductions of agent benchmarks report frequent drift when tool outputs
+  are summarized without preserving source identifiers.
+- Studies with explicit evidence IDs make disagreement analysis easier because
+  reviewers can trace each claim back to a concrete artifact.

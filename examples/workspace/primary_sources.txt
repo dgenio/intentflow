@@ -1,0 +1,6 @@
+Primary source notes:
+
+- The project README defines governed cognition as evidence, actions,
+  uncertainty, verification, and outputs compiled into an inspectable plan.
+- The architecture notes state that the runtime enforces action gates outside
+  the model and emits an append-only trace for audit.
