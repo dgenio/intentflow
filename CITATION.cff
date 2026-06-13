@@ -1,0 +1,16 @@
+cff-version: 1.2.0
+message: "If you use IntentFlow in academic work, papers, or reports, please cite it using the metadata from this file."
+type: software
+title: "IntentFlow"
+abstract: "An experimental language for governed cognitive processes: goals, evidence, uncertainty, verification, and auditable agent execution."
+authors:
+  - name: "IntentFlow contributors"
+version: 0.4.0
+repository-code: "https://github.com/dgenio/intentflow"
+license: MIT
+keywords:
+  - llm
+  - agents
+  - language
+  - compiler
+  - verification
