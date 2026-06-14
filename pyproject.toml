@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "intentflow"
-version = "0.5.0"
+version = "0.6.0"
 description = "An experimental language for governed cognitive processes: goals, evidence, uncertainty, verification, and auditable agent execution."
 readme = "README.md"
 requires-python = ">=3.10"

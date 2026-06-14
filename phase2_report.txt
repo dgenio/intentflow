@@ -1,0 +1,130 @@
+OPEN=99 NO_MS=0 BAD_P=0 BAD_C=0
+=== M0: Tracker Hygiene and Scope Lock ===
+#107 Deprecate the backwards-compatibility aliases: `SimulationRuntime`, `SimulatorBackend`, `OpenAICompatibleBackend`, and the `--simulate` flag
+#91 Reconcile the issue tracker and README roadmap with the shipped feature set
+PRIORITY_COUNTS high=2 medium=0 low=0
+COMPLEXITY_COUNTS simple=0 average=2 complex=0
+=== M1: Foundation and Supply-Chain Baseline ===
+#110 Investigation: adopt a formally specified canonical JSON form (RFC 8785 JCS) for all hash inputs
+#109 Formalize the zero-runtime-dependency core as a protected design choice, with a CI guard
+#100 Add demo assets: terminal recording, runnable one-liner, and a social preview that shows the audit catching tampering
+#96 Publish a container image and devcontainer for instant, reproducible usage
+#88 Add CITATION.cff and a how-to-cite section for research users
+#87 Add a backend configuration guide: provider matrix, environment variables, and local-model recipes
+#86 Write an embedding tutorial: governed Python tools, custom approvers, judges, and CI auditing
+#79 Establish dependency and supply-chain hygiene: automated update PRs, vulnerability audit, SBOM
+#65 Replace destructive-action substring heuristics with declarable action risk metadata
+#57 Enforce the `distrust` evidence stance in machine verification (no sole-support citations)
+#46 Separate structured runtime logging from user-facing output
+#41 Add a LICENSE file and complete package metadata
+#39 Formalize the public Python API surface and stability guarantees
+#34 Make verification-rule classification explicit and robust
+#32 Relocate simulation-specific behavior out of the governed runtime
+#22 [CI] Add GitHub Actions workflow: test matrix, lint, format, and type checks
+PRIORITY_COUNTS high=16 medium=0 low=0
+COMPLEXITY_COUNTS simple=7 average=9 complex=0
+=== M2: Core Runtime Correctness and Safety ===
+#105 Add CLI-level regression tests for approval flag wiring and channel precedence
+#77 Define pipeline stage-failure semantics: stop, record, and report partial results
+#76 Add resource guardrails to gated tool execution: timeouts and output-size limits
+#73 Add timeouts and a bounded retry policy to real backend and judge calls
+#69 Detect and reject conflicting tool registrations in `ToolRegistry`
+#66 Introduce a coherent exception hierarchy and stable CLI exit-code contract
+#54 Route `ask_human` escalations through real approval channels instead of a simulated response
+#44 Cover real-backend assembleÔåÆcallÔåÆparse paths with fake clients
+#42 Investigation: constrain workspace evidence-file resolution against path traversal
+#40 Harden the synchronous webhook approval channel
+#35 Harden real-backend model-reply parsing against malformed output
+PRIORITY_COUNTS high=11 medium=0 low=0
+COMPLEXITY_COUNTS simple=0 average=11 complex=0
+=== M3: Trace, Witness, and Audit Integrity ===
+#108 Unify the run artifact surface: one canonical witness envelope behind `--trace-dir` and `--trace-out`
+#104 Big swing: optional transparency-log anchoring for witnesses (public, append-only verifiability)
+#103 Big swing: a second, independent auditor implementation (TypeScript) to prove the witness format
+#99 Add `intentflow diff`: compare two witnesses to explain behavioral drift between runs
+#85 Add a concepts and glossary document (contract, witness, envelope, trust tiers, calibration)
+#82 Stream trace events to an append-only JSONL file during the run
+#81 Add Ed25519 public-key trace signatures alongside HMAC sealing
+#80 Add key identifiers and rotation support to trace sealing
+#78 Implement the plan's `trace_policy`: prompt recording control and evidence redaction levels
+#67 Extract trace primitives into a dedicated `trace.py` module with a defined event vocabulary
+#55 Always emit a trace witness, even when a run fails partway
+#47 Investigation: trace memory and repeated full-document hashing cost on large runs
+#38 Define and enforce execution-plan / trace format version compatibility
+#36 Emit a verifiable combined trace and summary for pipeline runs
+#28 [Showcase] Add a tamper-evidence demo: forge a trace, watch the auditor catch it
+#25 [Testing] Add golden-file tests to stabilize plan and trace output
+PRIORITY_COUNTS high=12 medium=1 low=3
+COMPLEXITY_COUNTS simple=1 average=12 complex=3
+=== M4: Language and Compiler Evolution ===
+#114 Spike multi-language SDK boundary (TypeScript and Go first)
+#112 [IDE] Add Language Server diagnostics for .iflow (parse/compile/lint on save/type)
+#106 Implement plan-level compiler optimizations: token-budget evidence ordering, early-exit, and risk-aware gate scheduling
+#97 Add `intentflow draft`: LLM-assisted authoring of governed programs with a validate/lint feedback loop
+#83 Add a microbenchmark suite and remove quadratic name-lookup scans in parser/compiler
+#70 Design proposal: an extension seam for new goal sections (section registry)
+#62 Let triggered uncertainty actions invoke governed tools through the ActionGate
+#61 Support per-goal model configuration (model name, token budget, temperature) in the plan
+#60 Declare evidenceÔåÆtool bindings in the language (`require logs via read_logs`)
+#59 Add typed output contracts: field types, ranges, and runtime validation
+#58 Grow the machine-checkable verification vocabulary (`consistent_with`, output bounds, evidence coverage)
+#56 Add a `--goal` flag to `intentflow run` for selecting one goal from a multi-goal file
+#53 Add runtime inputs to goals: an `input:` section, `--input` CLI flag, and `run(inputs=...)`
+#37 Aggregate compiler diagnostics instead of failing on the first error
+PRIORITY_COUNTS high=0 medium=14 low=0
+COMPLEXITY_COUNTS simple=0 average=9 complex=5
+=== M5: Testing and Conformance Depth ===
+#111 Name, document, and regression-test the runtime's heuristic constants
+#94 Build a pytest plugin: fixtures and assertions for governed-run conformance testing
+#74 Complete the example workspace and add an all-examples conformance smoke suite
+#48 Build an executable conformance kit any backend or runtime must pass
+#43 Add property-based / fuzz tests for the parser and formatter
+#24 [Testing] Add an adversarial conformance suite that proves the auditor catches violations
+PRIORITY_COUNTS high=1 medium=5 low=0
+COMPLEXITY_COUNTS simple=1 average=3 complex=2
+=== M6: Developer Experience and Authoring Workflow ===
+#118 Add SARIF output for validate and lint diagnostics
+#117 Mentor Mode: explain source to plan to runtime consequences
+#113 Build VS Code Run + Audit panel for IntentFlow workflows
+#98 Support judge panels: multiple judges per rule with disagreement escalation
+#93 Publish pre-commit hooks for `.iflow` formatting, validation, and linting
+#92 Define CLI design conventions and a surface budget before the flag count grows further
+#90 Ship shell completions for the CLI (bash/zsh/fish)
+#89 Add `intentflow doctor`: environment and configuration diagnostics
+#84 Evaluate judged verification rules concurrently with a bounded worker pool
+#75 Record and replay judge interactions in cassettes
+#72 Close auditor coverage gaps: required-evidence collection and uncertainty-rule identity
+#71 Tidy embedding-API pipeline wiring: single registry construction and consistent workspace handling
+#68 Separate prompt rendering from plan compilation (versioned prompt templates)
+#64 Add `intentflow explain`: a pre-run preview of prompts, gates, and risk (dry run)
+#63 Support multi-file programs: an `import` mechanism for goals and pipelines
+#51 Investigation: calibration-before-threshold semantics and author-configurable calibration
+#50 Document the minimal grammar and deterministic simulator as deliberate choices (ADR)
+#49 Formalize and lock the core governance invariants
+#45 Adopt ruff + mypy configuration with a clean baseline
+#33 Make governance-blocked or failed evidence collection a first-class outcome, not a silent simulated fallback
+#31 Produce the declared output: contract from cognition instead of synthesizing it in the runtime
+#30 [Examples] Add an example gallery of governed agents for real operational domains
+#23 [Release] Publish to PyPI with automated, tagged releases and a changelog
+#21 [DX] Improve diagnostics with source snippets and fix suggestions
+#20 [DX] Add human-readable output formats for run and audit results
+#19 [DX] Add an intentflow init scaffolding command with goal templates
+PRIORITY_COUNTS high=2 medium=23 low=1
+COMPLEXITY_COUNTS simple=3 average=22 complex=1
+=== M7: Docs, Examples, and Community Onboarding ===
+#101 Enable GitHub Discussions with a show-and-tell space for governed programs
+#29 [Security] Document the threat model and harden handling of untrusted evidence content
+#27 [Showcase] Build a zero-install browser playground with Pyodide
+#26 [Community] Add contributing guide, issue templates, and a curated good-first-issue set
+PRIORITY_COUNTS high=1 medium=0 low=3
+COMPLEXITY_COUNTS simple=2 average=1 complex=1
+=== M8: Ecosystem Integrations and Distribution ===
+#95 Provide a LangChain/LlamaIndex interop adapter: wrap framework tools as governed actions
+PRIORITY_COUNTS high=0 medium=1 low=0
+COMPLEXITY_COUNTS simple=0 average=1 complex=0
+=== M9: Advanced Platform Experiments ===
+#116 Add counterfactual policy simulator for governance tuning
+#115 Add governance-diff PR reviewer bot for policy-risk deltas
+#102 Big swing: `intentflow serve` ÔÇö a durable run service with suspend/resume on human gates
+PRIORITY_COUNTS high=0 medium=0 low=3
+COMPLEXITY_COUNTS simple=0 average=0 complex=3

@@ -7,6 +7,7 @@ to avoid drift across multiple copies.
 
 ## Recently Shipped
 
+- Typed outputs, analyzer, phase runtime, replay/explain shipped in commit f6bfd6a (v0.6.0).
 - Blocking approval gates (pre-grant, interactive TTY, synchronous webhook)
   shipped in commit cb6168c. Remaining async/polling follow-up: #2.
 - Hash-chained traces with optional HMAC sealing shipped in commit cb6168c.
