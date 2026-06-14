@@ -1,0 +1,6 @@
+blank_issues_enabled: true
+
+contact_links:
+  - name: Documentation
+    url: https://github.com/dgenio/intentflow
+    about: Read the project documentation before opening an issue.
