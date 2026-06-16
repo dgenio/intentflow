@@ -5,7 +5,7 @@ title: "IntentFlow"
 abstract: "An experimental language for governed cognitive processes: goals, evidence, uncertainty, verification, and auditable agent execution."
 authors:
   - name: "IntentFlow contributors"
-version: 0.4.0
+version: 0.6.0
 repository-code: "https://github.com/dgenio/intentflow"
 license: MIT
 keywords:

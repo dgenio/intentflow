@@ -303,7 +303,7 @@ version you used. For example:
 @software{intentflow,
   title = {IntentFlow},
   author = {{IntentFlow contributors}},
-  version = {0.4.0},
+  version = {0.6.0},
   url = {https://github.com/dgenio/intentflow},
   note = {An experimental language for governed cognitive processes}
 }
