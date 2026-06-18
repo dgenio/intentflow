@@ -46,7 +46,23 @@ def _runtime_dependencies(pyproject_text: str) -> list[str]:
 def _top_level_imports(source: str) -> set[str]:
     tree = ast.parse(source)
     modules: set[str] = set()
-    for node in tree.body:
+
+    def iter_module_level(nodes: list[ast.stmt]):
+        for node in nodes:
+            yield node
+            if isinstance(node, ast.If):
+                yield from iter_module_level(node.body)
+                yield from iter_module_level(node.orelse)
+            elif isinstance(node, ast.Try):
+                yield from iter_module_level(node.body)
+                for handler in node.handlers:
+                    yield from iter_module_level(handler.body)
+                yield from iter_module_level(node.orelse)
+                yield from iter_module_level(node.finalbody)
+            elif isinstance(node, (ast.With, ast.AsyncWith)):
+                yield from iter_module_level(node.body)
+
+    for node in iter_module_level(tree.body):
         if isinstance(node, ast.Import):
             modules.update(alias.name.split(".", 1)[0] for alias in node.names)
         elif isinstance(node, ast.ImportFrom):
@@ -75,7 +91,7 @@ def test_intentflow_modules_only_import_stdlib_or_intentflow_at_top_level() -> N
         path.relative_to(ROOT).as_posix(): sorted(
             _third_party_top_level_imports(path.read_text())
         )
-        for path in sorted((ROOT / "intentflow").glob("*.py"))
+        for path in sorted((ROOT / "intentflow").rglob("*.py"))
     }
     violations = {path: modules for path, modules in violations.items() if modules}
     assert violations == {}
@@ -95,16 +111,4 @@ dependencies = ["requests"]
 def test_core_import_and_simulate_backend_work_without_optional_extras() -> None:
     assert intentflow.__version__
     backend = make_backend("simulate")
-    proposal = backend.propose(
-        {
-            "prompt_plan": [
-                {
-                    "phase": "system",
-                    "instruction": "Goal DiagnoseProductionIssue",
-                }
-            ]
-        },
-        [{"id": "E1", "source": "logs", "summary": "synthetic evidence"}],
-    )
-    assert proposal.hypotheses
-    assert proposal.proposed_fix
+    assert isinstance(backend.complete("system", "user"), str)

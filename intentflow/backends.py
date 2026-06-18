@@ -178,6 +178,20 @@ class SimulatedCognition:
     name = "simulate"
     model_name = "intentflow-simulator"
 
+    def complete(self, system: str, user: str) -> str:
+        payload = {
+            "output": {
+                "response": "[simulated] deterministic completion",
+            },
+            "confidence": SIMULATED_CONFIDENCE,
+            "citations": [],
+            "notes": (
+                "[simulated] deterministic response; confidence and content "
+                "do not reflect real reasoning"
+            ),
+        }
+        return json.dumps(payload, indent=2)
+
     def respond(
         self,
         plan: dict[str, Any],
