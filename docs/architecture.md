@@ -120,6 +120,32 @@ pluggable. It lives outside the backend:
    run in `failed_verification` — the runtime cannot report it as success,
    and the auditor checks for exactly that cover-up (S1).
 
+### Zero-runtime-dependency core
+
+The core package is intentionally stdlib-only. `pyproject.toml` keeps
+`project.dependencies = []`; provider SDKs, test tools, and future adapters
+must live behind optional extras such as `dev`, `llm`, and `openai`.
+
+The import rule is strict:
+
+- modules under `intentflow/` may import the Python standard library and
+  `intentflow.*` at module import time;
+- optional provider SDKs are imported lazily inside backend constructors or
+  call paths and must raise actionable `RuntimeError`s when the extra or
+  credential is missing;
+- tests, examples, and packaging helpers may use dev-only tools, but those
+  imports must not become core runtime imports.
+
+The default answer to adding a core dependency is no. An exception must have
+no reasonable stdlib equivalent, be small enough to review transitively, and
+be justified by a trust or correctness requirement that cannot live behind an
+extra. That exception should update this policy before the dependency lands.
+
+`tests/test_dependency_policy.py` enforces the current contract by checking
+that runtime dependencies stay empty, top-level imports in `intentflow/*.py`
+are stdlib/local only, and `import intentflow` plus the simulated backend
+work without optional extras.
+
 ### Composition (`pipeline` blocks)
 
 Goals compose into linear pipelines. A later stage may require

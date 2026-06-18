@@ -157,6 +157,10 @@ everything `[simulated]`. It exists so the *control structure* — gating,
 calibration, verification, escalation, tracing — is testable end to end
 with no network.
 
+The core package is intentionally dependency-free; see
+[`docs/architecture.md#zero-runtime-dependency-core`](docs/architecture.md#zero-runtime-dependency-core)
+for the policy and test guard.
+
 ```bash
 intentflow run examples/production_diagnosis.iflow \
     --workspace examples/workspace --trace-dir traces --verbose
