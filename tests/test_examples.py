@@ -22,6 +22,11 @@ EXPECTED_WARNING_CODES_BY_EXAMPLE = {
     "high_risk_deploy.iflow": {"IFLOW010"},
     "research_synthesis.iflow": {"IFLOW009"},
 }
+EXPECTED_INFO_CODES_BY_EXAMPLE = {
+    "code_review.iflow": {"IFLOW021"},
+    "opensource_triage.iflow": {"IFLOW021"},
+    "research_synthesis.iflow": {"IFLOW017"},
+}
 
 
 def _assert_no_simulated_required_evidence(result: dict, plan: dict) -> None:
@@ -42,10 +47,13 @@ def test_examples_parse_validate_lint_run_and_audit(path: Path) -> None:
 
     diagnostics = analyze_program(program)
     assert errors_in(diagnostics) == []
+    lint_findings = lint_program(program)
     warning_codes = {
-        finding.rule_id for finding in lint_program(program) if finding.level == "warning"
+        finding.rule_id for finding in lint_findings if finding.level == "warning"
     }
+    info_codes = {finding.rule_id for finding in lint_findings if finding.level == "info"}
     assert warning_codes == EXPECTED_WARNING_CODES_BY_EXAMPLE.get(path.name, set())
+    assert info_codes == EXPECTED_INFO_CODES_BY_EXAMPLE.get(path.name, set())
     assert format_source(path.read_text()) == path.read_text()
 
     document = compile_program(program)
