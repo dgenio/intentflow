@@ -23,6 +23,7 @@ goal SynthesizeResearch {
   actions:
     allow search_repo
     allow read_issue
+    allow read_papers
 
   verify:
     require cites_evidence

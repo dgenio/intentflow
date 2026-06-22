@@ -30,15 +30,23 @@ EXPECTED_INFO_CODES_BY_EXAMPLE = {
 
 
 def _assert_no_simulated_required_evidence(result: dict, plan: dict) -> None:
+    if result["status"] == "blocked":
+        return
+
     required_sources = {
         source for source in plan["evidence_policy"]["required"] if "." not in source
     }
-    simulated_required = [
-        item["source"]
+    collected_by_source = {
+        item["source"]: item
         for item in result["evidence"]
-        if item["source"] in required_sources and item["origin"] == "simulated"
-    ]
-    assert simulated_required == []
+        if item["source"] in required_sources
+    }
+    assert set(collected_by_source) == required_sources
+    assert {
+        source
+        for source, item in collected_by_source.items()
+        if item["origin"] == "simulated"
+    } == set()
 
 
 @pytest.mark.parametrize("path", EXAMPLES, ids=lambda path: path.name)
