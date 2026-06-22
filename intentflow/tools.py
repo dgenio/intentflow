@@ -298,6 +298,16 @@ class ToolRegistry:
                     description="read an issue and its comments from the workspace",
                 ),
                 Tool(
+                    action="read_papers",
+                    serves=(
+                        "primary_sources",
+                        "recent_publications",
+                        "replication_studies",
+                    ),
+                    handler=reader,
+                    description="read research sources from the workspace",
+                ),
+                Tool(
                     action="search_repo",
                     serves=("repo_context", "related_issues"),
                     handler=reader,
