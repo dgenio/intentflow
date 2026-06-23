@@ -23,7 +23,7 @@ dependencies = []
 intentflow = "intentflow.cli:main"
 
 [project.optional-dependencies]
-dev = ["pytest>=7"]
+dev = ["pytest>=7", "shtab>=1.8"]
 llm = ["anthropic>=0.40"]
 openai = ["openai>=1.40"]
 
