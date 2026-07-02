@@ -1,8 +1,8 @@
 # IntentFlow
 
-**A language for governed cognitive processes.**
-
 [![Read the Weaver Stack overview on Towards AI](https://img.shields.io/badge/Read_the_overview-Towards_AI-black?logo=medium&logoColor=white)](https://pub.towardsai.net/the-weaver-stack-one-contract-layer-for-safe-llm-agents-7f733cad5eac)
+
+**A language for governed cognitive processes.**
 
 > Python programs deterministic computation.
 > IntentFlow programs governed cognition.
