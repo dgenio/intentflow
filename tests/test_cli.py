@@ -161,6 +161,13 @@ def test_run_with_judge_flag(capsys) -> None:
     assert judged
 
 
+def test_run_replay_judge_requires_cassette(capsys) -> None:
+    # --judge replay without a --cassette must fail with a clear error, proving
+    # the CLI threads the cassette through to make_judge.
+    assert main(["run", TRIAGE, "--simulate", "--judge", "replay"]) == 1
+    assert "cassette" in capsys.readouterr().err
+
+
 def test_run_sign_trace_requires_key(monkeypatch, capsys) -> None:
     monkeypatch.delenv("IFLOW_TRACE_KEY", raising=False)
     assert main(["run", TRIAGE, "--simulate", "--sign-trace"]) == 1
