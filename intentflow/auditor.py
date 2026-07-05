@@ -95,16 +95,19 @@ def _verify_hmac_signature(
 def _verify_ed25519_signature(
     entry: dict[str, Any],
     root: str,
-    verifiers: dict[str, bytes] | None,
+    verifiers: "dict[str | None, bytes] | None",
 ) -> Violation | None:
     """Verify one ``ed25519`` seal signature entry against a *trusted* public
     key supplied out of band (never the key embedded in the entry, which a
     forger controls). ``verifiers`` maps ``key_id`` to trusted public-key bytes.
     Returns a ``T3`` Violation, or ``None`` if it verifies."""
+    verifiers = verifiers or {}
     key_id = entry.get("key_id")
-    public_key = (verifiers or {}).get(key_id) if key_id is not None else (
-        next(iter(verifiers.values())) if verifiers else None
-    )
+    # A named key (by key_id) takes precedence; the default trusted key (stored
+    # under None, e.g. a single IFLOW_TRACE_PUBLIC_KEY) verifies any seal.
+    public_key = verifiers.get(key_id) if key_id is not None else None
+    if public_key is None:
+        public_key = verifiers.get(None)
     if public_key is None:
         which = f" for key id {key_id!r}" if key_id is not None else ""
         return Violation(
@@ -405,7 +408,7 @@ def audit_result(
     result: dict[str, Any],
     sign_key: bytes | None = None,
     keys: dict[str, bytes] | None = None,
-    verifiers: dict[str, bytes] | None = None,
+    verifiers: "dict[str | None, bytes] | None" = None,
 ) -> dict[str, Any]:
     """Audit one goal result against its compiled plan.
 
@@ -453,7 +456,7 @@ def audit_document(
     result: dict[str, Any],
     sign_key: bytes | None = None,
     keys: dict[str, bytes] | None = None,
-    verifiers: dict[str, bytes] | None = None,
+    verifiers: "dict[str | None, bytes] | None" = None,
 ) -> dict[str, Any]:
     """Audit a result file (single goal or pipeline) against a compiled
     document. Returns an aggregate report. ``sign_key``/``keys``/``verifiers``

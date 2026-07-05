@@ -80,6 +80,7 @@ from intentflow.tools import (
 )
 from intentflow.formatter import format_file, format_source
 from intentflow.linter import lint_program
+from intentflow.signing import Ed25519Signer, sign_root, verify_root
 from intentflow.trace import (
     CANONICAL_PHASES,
     GENESIS_HASH,
@@ -101,6 +102,7 @@ from intentflow.api import IntentFlowProgram, load, load_source
 
 __all__ = [
     "CANONICAL_PHASES",
+    "Ed25519Signer",
     "Event",
     "GENESIS_HASH",
     "KNOWN_EVENTS",
@@ -109,6 +111,8 @@ __all__ = [
     "TraceSigner",
     "assert_json_native",
     "link_hash",
+    "sign_root",
+    "verify_root",
     "ActionDenied",
     "ActionGate",
     "ActionPolicy",

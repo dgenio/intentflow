@@ -386,3 +386,41 @@ def test_cli_audit_unknown_key_id_is_nonconformant(tmp_path, monkeypatch) -> Non
     monkeypatch.delenv("IFLOW_TRACE_KEY_ID", raising=False)
     monkeypatch.setenv("IFLOW_TRACE_KEYS", "prod2=other-secret")
     assert main(["audit", TRIAGE, str(out)]) == 1
+
+
+# -- Ed25519 public-key signing (issue #81) ------------------------------------
+
+
+def test_cli_ed25519_sign_and_audit_with_public_key(tmp_path, monkeypatch) -> None:
+    crypto = pytest.importorskip("cryptography")
+    from cryptography.hazmat.primitives import serialization
+    from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
+
+    priv = Ed25519PrivateKey.generate()
+    priv_path = tmp_path / "ed.pem"
+    pub_path = tmp_path / "ed.pub"
+    priv_path.write_bytes(
+        priv.private_bytes(
+            serialization.Encoding.PEM,
+            serialization.PrivateFormat.PKCS8,
+            serialization.NoEncryption(),
+        )
+    )
+    pub_path.write_bytes(
+        priv.public_key().public_bytes(
+            serialization.Encoding.PEM,
+            serialization.PublicFormat.SubjectPublicKeyInfo,
+        )
+    )
+    out = tmp_path / "witness.json"
+    monkeypatch.setenv("IFLOW_TRACE_SIGNING_KEY", str(priv_path))
+    monkeypatch.setenv("IFLOW_TRACE_KEY_ID", "ed-2026")
+    assert main(["run", TRIAGE, "--simulate", "--sign-trace", "--trace-out", str(out)]) == 0
+    envelope = json.loads(out.read_text())
+    assert [s["algo"] for s in envelope["result"]["trace_chain"]["signatures"]] == ["ed25519"]
+
+    # Verify with ONLY the public key — no secret in the environment.
+    monkeypatch.delenv("IFLOW_TRACE_SIGNING_KEY", raising=False)
+    monkeypatch.delenv("IFLOW_TRACE_KEY_ID", raising=False)
+    monkeypatch.setenv("IFLOW_TRACE_PUBLIC_KEY", str(pub_path))
+    assert main(["audit", TRIAGE, str(out)]) == 0

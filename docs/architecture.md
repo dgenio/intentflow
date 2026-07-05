@@ -124,7 +124,9 @@ pluggable. It lives outside the backend:
 
 The core package is intentionally stdlib-only. `pyproject.toml` keeps
 `project.dependencies = []`; provider SDKs, test tools, and future adapters
-must live behind optional extras such as `dev`, `llm`, and `openai`.
+must live behind optional extras such as `dev`, `llm`, `openai`, and `sign`
+(Ed25519 signing via `cryptography`, imported lazily inside
+`intentflow.signing` so the core import path never pulls it in).
 
 The import rule is strict:
 
@@ -195,8 +197,12 @@ Three mechanisms keep the runtime honest beyond the plan:
   or reordering with no plan required, and depends only on `trace.py` — never on
   the runtime it verifies. The links live in the trace, so the bare chain is
   integrity, not authenticity — a forger could recompute it. ``--sign-trace``
-  HMAC-seals the root out of band, so a key holder can *detect* (not prevent)
-  edits.
+  seals the root out of band: an HMAC signature (shared secret, optionally
+  key-id'd for rotation) lets a key holder *detect* edits, and an Ed25519
+  signature (optional ``sign`` extra) lets any third party verify the witness
+  with only the public key — no shared secret. Seals live in a ``signatures``
+  list, so HMAC and Ed25519 can coexist. Key management and rotation:
+  ``docs/trace-signing.md``.
 
 ### Embedding (`api.py`)
 

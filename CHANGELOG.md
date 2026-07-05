@@ -36,6 +36,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   sign time), so rotating the signing key keeps old witnesses verifiable.
   Unknown-key-id and invalid-signature are distinct violations; key material is
   never logged. Procedure in `docs/trace-signing.md`.
+- **Ed25519 public-key trace signatures**: new `intentflow.signing` module
+  (`sign_root`, `verify_root`, `Ed25519Signer`) behind the optional `sign`
+  extra (`pip install "intentflow[sign]"`, which adds `cryptography`). A run
+  signed with a private key (`--sign-trace` + `IFLOW_TRACE_SIGNING_KEY`) is
+  verifiable by any third party with only the **public** key
+  (`IFLOW_TRACE_PUBLIC_KEY`) — no shared secret. HMAC and Ed25519 seals compose
+  (dual-signing). The core import path stays free of `cryptography` (lazy,
+  function-scoped import), verified by test.
 
 ### Changed
 - Trace event names are now defined once as `trace.Event` constants and shared

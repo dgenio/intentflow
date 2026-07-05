@@ -210,19 +210,48 @@ def _build_approver(args: argparse.Namespace):
     return None
 
 
-def _sign_key(args: argparse.Namespace) -> tuple[bytes | None, str | None]:
-    """The HMAC signing key and its optional id for ``--sign-trace``.
+def _sealing_config(args: argparse.Namespace) -> dict:
+    """Assemble the trace-sealing keyword args for a run from ``--sign-trace``.
 
-    Reads ``IFLOW_TRACE_KEY`` (required) and ``IFLOW_TRACE_KEY_ID`` (optional).
-    Tagging a seal with a key id lets a verifier pick the right key after
-    rotation; see ``docs/trace-signing.md``."""
+    ``--sign-trace`` seals the trace with HMAC (``IFLOW_TRACE_KEY``, optionally
+    labelled by ``IFLOW_TRACE_KEY_ID``) and/or Ed25519 (``IFLOW_TRACE_SIGNING_KEY``,
+    a PEM private-key path); at least one key source must be set. The two
+    compose — set both to dual-sign. See ``docs/trace-signing.md``."""
     if not args.sign_trace:
-        return None, None
-    key = os.environ.get("IFLOW_TRACE_KEY")
-    if not key:
-        raise RuntimeError("--sign-trace requires the IFLOW_TRACE_KEY environment variable")
+        return {"sign_key": None, "key_id": None, "signers": None}
+    hmac_secret = os.environ.get("IFLOW_TRACE_KEY")
+    signing_key_path = os.environ.get("IFLOW_TRACE_SIGNING_KEY")
+    if not hmac_secret and not signing_key_path:
+        raise RuntimeError(
+            "--sign-trace requires IFLOW_TRACE_KEY (HMAC) and/or "
+            "IFLOW_TRACE_SIGNING_KEY (Ed25519 private-key PEM path)"
+        )
     key_id = os.environ.get("IFLOW_TRACE_KEY_ID") or None
-    return key.encode("utf-8"), key_id
+    sign_key = hmac_secret.encode("utf-8") if hmac_secret else None
+    signers: list = []
+    if signing_key_path:
+        from intentflow.signing import Ed25519Signer
+
+        try:
+            pem = Path(signing_key_path).read_bytes()
+        except OSError as exc:
+            raise RuntimeError(
+                f"IFLOW_TRACE_SIGNING_KEY: cannot read {signing_key_path!r}: {exc}"
+            ) from exc
+        signers.append(Ed25519Signer(pem, key_id))
+    return {"sign_key": sign_key, "key_id": key_id, "signers": signers}
+
+
+def _verify_public_keys() -> dict:
+    """The Ed25519 public keys ``audit`` uses to verify seals.
+
+    ``IFLOW_TRACE_PUBLIC_KEY`` (a PEM public-key path) is the default trusted
+    key (stored under ``None``), so it verifies any Ed25519 seal regardless of
+    its ``key_id`` label. No public key configured → no Ed25519 verification."""
+    path = os.environ.get("IFLOW_TRACE_PUBLIC_KEY")
+    if not path:
+        return {}
+    return {None: Path(path).read_bytes()}
 
 
 def _parse_key_set(raw: str) -> dict[str, bytes]:
@@ -263,13 +292,12 @@ def cmd_run(args: argparse.Namespace) -> int:
     try:
         backend = make_backend(backend_name, cassette)
         judge = make_judge(args.judge) if args.judge else None
-        sign_key, key_id = _sign_key(args)
+        seal_kwargs = _sealing_config(args)
     except (ValueError, RuntimeError) as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 1
     approver = _build_approver(args)
     printer = print if args.verbose else None
-    seal_kwargs: dict = {"sign_key": sign_key, "key_id": key_id}
 
     if args.pipeline:
         document = _compile_or_fail(program)
@@ -581,10 +609,12 @@ def cmd_audit(args: argparse.Namespace) -> int:
         )
         return 2
     result = envelope["result"]
-    # Verify any HMAC trace seal against the available keys: IFLOW_TRACE_KEY for
-    # a keyless seal, IFLOW_TRACE_KEYS ("id=secret,...") for rotated key-id'd seals.
+    # Verify any trace seal against the available keys: IFLOW_TRACE_KEY for a
+    # keyless HMAC seal, IFLOW_TRACE_KEYS ("id=secret,...") for rotated key-id'd
+    # HMAC seals, IFLOW_TRACE_PUBLIC_KEY (PEM) for Ed25519 seals.
     sign_key, keys = _verify_keys()
-    report = audit_document(document, result, sign_key, keys)
+    verifiers = _verify_public_keys()
+    report = audit_document(document, result, sign_key, keys, verifiers)
     print(json.dumps(report, indent=2))
     if report["conformant"]:
         print("AUDIT: CONFORMANT — the trace stayed inside the program's envelope")
@@ -679,7 +709,8 @@ def build_parser() -> argparse.ArgumentParser:
     p_run.add_argument(
         "--sign-trace",
         action="store_true",
-        help="HMAC-sign the trace chain using the IFLOW_TRACE_KEY env var",
+        help="seal the trace chain: HMAC via IFLOW_TRACE_KEY (+IFLOW_TRACE_KEY_ID) "
+        "and/or Ed25519 via IFLOW_TRACE_SIGNING_KEY (see docs/trace-signing.md)",
     )
     p_run.add_argument(
         "--trace-dir",
