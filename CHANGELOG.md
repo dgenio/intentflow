@@ -24,6 +24,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   / `SUPPORTED_TRACE_FORMATS`), emitting a `P2` violation on a mismatch instead
   of auditing an unknown shape. Run results carry a `format_version`
   (`trace.TRACE_FORMAT_VERSION`). Policy documented in `docs/formats.md`.
+- **Published JSON Schemas** (`schemas/plan.schema.json`,
+  `schemas/result.schema.json`, JSON Schema draft 2020-12) for the two contract
+  artifacts, linked from the README and `docs/formats.md`. Every bundled
+  example's plan, goal result, and pipeline result is validated against them in
+  the test suite. `jsonschema` added as a **dev-only** dependency; the runtime
+  core stays dependency-free.
 
 ### Changed
 - Trace event names are now defined once as `trace.Event` constants and shared

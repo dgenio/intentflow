@@ -48,3 +48,22 @@ Re-compile the source (`intentflow compile`) or re-run it (`intentflow run`)
 with a matching IntentFlow release to produce a current, auditable artifact.
 There is no in-place migration of old witnesses; the source program plus a
 current runtime reproduces an equivalent one.
+
+## Consuming the schemas
+
+The schemas are JSON Schema **draft 2020-12** and live under
+[`schemas/`](../schemas/). They are the authoritative description of each
+artifact's shape — an independent auditor, trace viewer, or storage layer in any
+language can validate against them.
+
+The schemas are intentionally strict at the top level (`additionalProperties:
+false`, so shape drift is caught) and typed on the verifiable trace/witness
+structures (hash-chain links are 64-hex, sequence numbers are positive
+integers, statuses are an enum). Rich nested *plan policy* objects are typed as
+objects but not exhaustively constrained, so the schema documents the contract
+without freezing every internal field prematurely — a deliberate pre-1.0 choice.
+
+`tests/test_schemas.py` validates every bundled example's plan, goal result, and
+pipeline result against these schemas, so they cannot drift from what the code
+emits without a test failing. `jsonschema` is a dev-only dependency; the runtime
+core stays dependency-free.
