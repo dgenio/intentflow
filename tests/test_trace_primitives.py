@@ -66,7 +66,7 @@ def test_bare_trace_records_a_hash_chain() -> None:
     seal = trace.seal()
     assert seal["length"] == 2
     assert seal["root"] == events[1]["hash"]
-    assert seal["signature"] is None
+    assert seal["signatures"] == []
 
 
 def test_auditor_does_not_import_from_runtime() -> None:

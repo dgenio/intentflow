@@ -121,12 +121,25 @@
     },
     "traceChain": {
       "type": "object",
-      "required": ["algo", "length", "root", "signature"],
+      "required": ["algo", "length", "root", "signatures"],
       "properties": {
         "algo": { "type": "string" },
         "length": { "type": "integer", "minimum": 0 },
         "root": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
-        "signature": { "type": ["string", "null"] }
+        "signatures": {
+          "type": "array",
+          "description": "Zero or more signatures over the chain root. HMAC entries prove a shared-secret holder sealed it; Ed25519 entries are publicly verifiable. An empty list means an unsigned run.",
+          "items": {
+            "type": "object",
+            "required": ["algo", "signature"],
+            "properties": {
+              "algo": { "type": "string", "enum": ["hmac-sha256", "ed25519"] },
+              "signature": { "type": "string" },
+              "key_id": { "type": "string" },
+              "public_key": { "type": "string" }
+            }
+          }
+        }
       }
     }
   }

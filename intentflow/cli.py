@@ -210,13 +210,49 @@ def _build_approver(args: argparse.Namespace):
     return None
 
 
-def _sign_key(args: argparse.Namespace) -> bytes | None:
+def _sign_key(args: argparse.Namespace) -> tuple[bytes | None, str | None]:
+    """The HMAC signing key and its optional id for ``--sign-trace``.
+
+    Reads ``IFLOW_TRACE_KEY`` (required) and ``IFLOW_TRACE_KEY_ID`` (optional).
+    Tagging a seal with a key id lets a verifier pick the right key after
+    rotation; see ``docs/trace-signing.md``."""
     if not args.sign_trace:
-        return None
+        return None, None
     key = os.environ.get("IFLOW_TRACE_KEY")
     if not key:
         raise RuntimeError("--sign-trace requires the IFLOW_TRACE_KEY environment variable")
-    return key.encode("utf-8")
+    key_id = os.environ.get("IFLOW_TRACE_KEY_ID") or None
+    return key.encode("utf-8"), key_id
+
+
+def _parse_key_set(raw: str) -> dict[str, bytes]:
+    """Parse ``IFLOW_TRACE_KEYS`` ("id=secret,id2=secret2") into {id: key}.
+
+    Whitespace around ids/secrets is trimmed; malformed pairs (no ``=``) are
+    skipped. Key material is never logged."""
+    keys: dict[str, bytes] = {}
+    for pair in raw.split(","):
+        pair = pair.strip()
+        if not pair or "=" not in pair:
+            continue
+        key_id, _, secret = pair.partition("=")
+        key_id, secret = key_id.strip(), secret.strip()
+        if key_id and secret:
+            keys[key_id] = secret.encode("utf-8")
+    return keys
+
+
+def _verify_keys() -> tuple[bytes | None, dict[str, bytes]]:
+    """The keys ``audit`` uses to verify HMAC trace seals.
+
+    ``IFLOW_TRACE_KEY`` is the default (keyless-seal) key, retained for the
+    single-key case; ``IFLOW_TRACE_KEYS`` supplies a rotation set of
+    ``id=secret`` pairs used to verify key-id'd seals."""
+    default = os.environ.get("IFLOW_TRACE_KEY")
+    sign_key = default.encode("utf-8") if default else None
+    raw = os.environ.get("IFLOW_TRACE_KEYS")
+    keys = _parse_key_set(raw) if raw else {}
+    return sign_key, keys
 
 
 def cmd_run(args: argparse.Namespace) -> int:
@@ -227,12 +263,13 @@ def cmd_run(args: argparse.Namespace) -> int:
     try:
         backend = make_backend(backend_name, cassette)
         judge = make_judge(args.judge) if args.judge else None
-        sign_key = _sign_key(args)
+        sign_key, key_id = _sign_key(args)
     except (ValueError, RuntimeError) as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 1
     approver = _build_approver(args)
     printer = print if args.verbose else None
+    seal_kwargs: dict = {"sign_key": sign_key, "key_id": key_id}
 
     if args.pipeline:
         document = _compile_or_fail(program)
@@ -252,7 +289,7 @@ def cmd_run(args: argparse.Namespace) -> int:
                 workspace=args.workspace,
                 approver=approver,
                 judge=judge,
-                sign_key=sign_key,
+                **seal_kwargs,
             )
         ]
     elif args.goal:
@@ -266,7 +303,7 @@ def cmd_run(args: argparse.Namespace) -> int:
                 workspace=args.workspace,
                 approver=approver,
                 judge=judge,
-                sign_key=sign_key,
+                **seal_kwargs,
             )
         ]
     else:
@@ -283,7 +320,7 @@ def cmd_run(args: argparse.Namespace) -> int:
                 workspace=args.workspace,
                 approver=approver,
                 judge=judge,
-                sign_key=sign_key,
+                **seal_kwargs,
             )
             for goal in program.goals
         ]
@@ -507,7 +544,15 @@ def cmd_replay(args: argparse.Namespace) -> int:
 
     chain = result.get("trace_chain")
     if chain:
-        signed = "signed" if chain.get("signature") else "unsigned"
+        sigs = chain.get("signatures", [])
+        if sigs:
+            algos = ", ".join(
+                f"{s.get('algo')}" + (f":{s['key_id']}" if s.get("key_id") else "")
+                for s in sigs
+            )
+            signed = f"signed ({algos})"
+        else:
+            signed = "unsigned"
         print(
             f"\ntrace chain: {chain.get('length')} event(s), root "
             f"{str(chain.get('root'))[:16]}..., {signed}"
@@ -536,10 +581,10 @@ def cmd_audit(args: argparse.Namespace) -> int:
         )
         return 2
     result = envelope["result"]
-    # Verify any HMAC trace signature if the same key is available.
-    key = os.environ.get("IFLOW_TRACE_KEY")
-    sign_key = key.encode("utf-8") if key else None
-    report = audit_document(document, result, sign_key)
+    # Verify any HMAC trace seal against the available keys: IFLOW_TRACE_KEY for
+    # a keyless seal, IFLOW_TRACE_KEYS ("id=secret,...") for rotated key-id'd seals.
+    sign_key, keys = _verify_keys()
+    report = audit_document(document, result, sign_key, keys)
     print(json.dumps(report, indent=2))
     if report["conformant"]:
         print("AUDIT: CONFORMANT — the trace stayed inside the program's envelope")

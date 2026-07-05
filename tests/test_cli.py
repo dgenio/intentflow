@@ -356,3 +356,33 @@ def test_triage_example_runs_and_audits() -> None:
     assert result["status"] == "completed"
     report = audit_document(document, result)
     assert report["conformant"] is True
+
+
+# -- trace signing key rotation (issue #80) ------------------------------------
+
+
+def test_cli_key_id_seal_and_audit_with_key_set(tmp_path, monkeypatch) -> None:
+    monkeypatch.setenv("IFLOW_TRACE_KEY", "rot-secret")
+    monkeypatch.setenv("IFLOW_TRACE_KEY_ID", "prod1")
+    out = tmp_path / "witness.json"
+    assert main(["run", TRIAGE, "--simulate", "--sign-trace", "--trace-out", str(out)]) == 0
+    envelope = json.loads(out.read_text())
+    sig = envelope["result"]["trace_chain"]["signatures"][0]
+    assert sig["key_id"] == "prod1"
+
+    # Audit with a rotation set (old + new keys) verifies the key-id'd seal.
+    monkeypatch.delenv("IFLOW_TRACE_KEY", raising=False)
+    monkeypatch.delenv("IFLOW_TRACE_KEY_ID", raising=False)
+    monkeypatch.setenv("IFLOW_TRACE_KEYS", "prod2=new-secret,prod1=rot-secret")
+    assert main(["audit", TRIAGE, str(out)]) == 0
+
+
+def test_cli_audit_unknown_key_id_is_nonconformant(tmp_path, monkeypatch) -> None:
+    monkeypatch.setenv("IFLOW_TRACE_KEY", "rot-secret")
+    monkeypatch.setenv("IFLOW_TRACE_KEY_ID", "prod1")
+    out = tmp_path / "witness.json"
+    assert main(["run", TRIAGE, "--simulate", "--sign-trace", "--trace-out", str(out)]) == 0
+    monkeypatch.delenv("IFLOW_TRACE_KEY", raising=False)
+    monkeypatch.delenv("IFLOW_TRACE_KEY_ID", raising=False)
+    monkeypatch.setenv("IFLOW_TRACE_KEYS", "prod2=other-secret")
+    assert main(["audit", TRIAGE, str(out)]) == 1

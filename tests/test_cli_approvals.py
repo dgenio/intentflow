@@ -164,4 +164,6 @@ def test_cli_sign_trace_writes_trace_chain_signature(
     # signed trace chain) is under "result".
     envelope = json.loads(output.read_text())
     assert envelope["artifact"] == "intentflow-trace"
-    assert envelope["result"]["trace_chain"]["signature"]
+    sigs = envelope["result"]["trace_chain"]["signatures"]
+    assert [s["algo"] for s in sigs] == ["hmac-sha256"]
+    assert sigs[0]["signature"]

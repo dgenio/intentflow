@@ -30,6 +30,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   example's plan, goal result, and pipeline result is validated against them in
   the test suite. `jsonschema` added as a **dev-only** dependency; the runtime
   core stays dependency-free.
+- **Trace-seal key ids and rotation**: `Trace(sign_key=, key_id=)` tags an HMAC
+  seal with a key id; the auditor verifies key-id'd seals against a key set
+  (`IFLOW_TRACE_KEYS="id=secret,…"` at audit time, `IFLOW_TRACE_KEY_ID` at
+  sign time), so rotating the signing key keeps old witnesses verifiable.
+  Unknown-key-id and invalid-signature are distinct violations; key material is
+  never logged. Procedure in `docs/trace-signing.md`.
 
 ### Changed
 - Trace event names are now defined once as `trace.Event` constants and shared
@@ -49,6 +55,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   `--trace-dir` or `--goal`) instead of writing an unauditable JSON list.
   `audit` and `replay` now require the envelope and no longer sniff shapes;
   `build_witness_envelope` is the single source for both flags.
+- **Breaking (seal shape)**: the trace seal now carries a `signatures` list
+  (`[{algo, signature, key_id?}]`) instead of a single flat `signature` field,
+  so HMAC and (new) Ed25519 signatures coexist and HMAC seals can be key-id'd.
 
 ### Documented
 - `docs/adr/0001-canonical-json-hashing.md`: adopts RFC 8785 (JCS) as the target

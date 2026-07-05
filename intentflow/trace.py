@@ -26,7 +26,20 @@ from __future__ import annotations
 import hashlib
 import hmac
 import json
-from typing import Any
+from typing import Any, Protocol
+
+
+class TraceSigner(Protocol):
+    """A pluggable signer over the trace chain root.
+
+    Implementations return one seal ``signatures`` entry — a dict with at least
+    ``algo`` and ``signature`` (and typically ``key_id``). This keeps the
+    optional public-key backend (`intentflow.signing`, which needs `cryptography`)
+    out of this stdlib-only module: the runtime injects a signer, `trace.py`
+    never imports the crypto library.
+    """
+
+    def sign_entry(self, root: str) -> dict[str, Any]: ...
 
 #: Version of the *result/trace (witness) format* — the shape of the run-result
 #: envelope a run emits and the auditor consumes. Independent of the plan format
@@ -203,10 +216,18 @@ class Trace:
     edits, even to runs they did not execute.
     """
 
-    def __init__(self, sign_key: bytes | None = None) -> None:
+    def __init__(
+        self,
+        sign_key: bytes | None = None,
+        key_id: str | None = None,
+        signers: "list[TraceSigner] | None" = None,
+    ) -> None:
         self.events: list[dict[str, Any]] = []
         self._prev = GENESIS_HASH
         self._sign_key = sign_key
+        self._key_id = key_id
+        #: Additional (e.g. public-key) signers applied to the root at seal time.
+        self._signers: list[TraceSigner] = list(signers or [])
 
     def record(self, phase: str, event: str, detail: dict[str, Any] | None = None) -> None:
         entry = {
@@ -227,16 +248,31 @@ class Trace:
         return list(self.events)
 
     def seal(self) -> dict[str, Any]:
-        """A compact, verifiable summary of the chain: algorithm, length,
-        root hash, and (if a key was supplied) an HMAC signature over it."""
-        signature = None
+        """A compact, verifiable summary of the chain: algorithm, length, root
+        hash, and a list of signatures over the root.
+
+        ``signatures`` holds zero or more entries, each ``{algo, signature}``
+        plus an optional ``key_id``. An HMAC entry is added when a ``sign_key``
+        was supplied (tagged with ``key_id`` when one was given, so a verifier
+        can pick the right key after rotation); injected :class:`TraceSigner`\\s
+        (e.g. Ed25519) contribute their own entries. An unsigned run seals with
+        an empty ``signatures`` list."""
+        signatures: list[dict[str, Any]] = []
         if self._sign_key is not None:
-            signature = hmac.new(
-                self._sign_key, self._prev.encode("utf-8"), hashlib.sha256
-            ).hexdigest()
+            entry: dict[str, Any] = {
+                "algo": "hmac-sha256",
+                "signature": hmac.new(
+                    self._sign_key, self._prev.encode("utf-8"), hashlib.sha256
+                ).hexdigest(),
+            }
+            if self._key_id is not None:
+                entry["key_id"] = self._key_id
+            signatures.append(entry)
+        for signer in self._signers:
+            signatures.append(signer.sign_entry(self._prev))
         return {
             "algo": "sha256-chain",
             "length": len(self.events),
             "root": self._prev,
-            "signature": signature,
+            "signatures": signatures,
         }

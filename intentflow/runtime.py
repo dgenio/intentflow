@@ -118,12 +118,14 @@ class GoalRuntime:
         approver: Approver | None = None,
         registry: ToolRegistry | None = None,
         sign_key: bytes | None = None,
+        key_id: str | None = None,
+        signers: list[Any] | None = None,
         pre_phases: list[dict[str, Any]] | None = None,
         diagnostics: list[dict[str, Any]] | None = None,
     ) -> None:
         self.plan = plan
         self.backend = backend or SimulatedCognition()
-        self.trace = Trace(sign_key=sign_key)
+        self.trace = Trace(sign_key=sign_key, key_id=key_id, signers=signers)
         self.gate = ActionGate(
             plan["action_policy"],
             trace=self.trace,
@@ -830,6 +832,8 @@ def execute_program(
     approver: Approver | None = None,
     registry: ToolRegistry | None = None,
     sign_key: bytes | None = None,
+    key_id: str | None = None,
+    signers: list[Any] | None = None,
 ) -> dict[str, Any]:
     """Run one goal of a parsed program through *all* canonical phases:
     analyze, compile, then the runtime phases. Returns a result whose status
@@ -875,6 +879,8 @@ def execute_program(
         approver=approver,
         registry=registry,
         sign_key=sign_key,
+        key_id=key_id,
+        signers=signers,
         pre_phases=pre,
         diagnostics=diag_dicts,
     )
@@ -942,6 +948,8 @@ def run_pipeline(
     approver: Approver | None = None,
     registry: ToolRegistry | None = None,
     sign_key: bytes | None = None,
+    key_id: str | None = None,
+    signers: list[Any] | None = None,
 ) -> dict[str, Any]:
     """Run a compiled pipeline: stages execute in order, and each stage's
     structured outputs become addressable evidence (``Goal.field``) for
@@ -987,6 +995,8 @@ def run_pipeline(
             approver=approver,
             registry=registry,
             sign_key=sign_key,
+            key_id=key_id,
+            signers=signers,
         )
         result = runtime.run()
         outputs_by_goal[stage_name] = result["outputs"]

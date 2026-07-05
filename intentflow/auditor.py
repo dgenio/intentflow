@@ -67,16 +67,75 @@ class Violation:
     message: str
 
 
+def _verify_hmac_signature(
+    entry: dict[str, Any],
+    root: str,
+    sign_key: bytes | None,
+    keys: dict[str, bytes] | None,
+) -> Violation | None:
+    """Verify one ``hmac-sha256`` seal signature entry. Returns a ``T3``
+    Violation, or ``None`` if it verifies. Key material is never echoed; a
+    ``key_id`` is an identifier, not a secret, so it may appear in messages."""
+    key_id = entry.get("key_id")
+    if key_id is not None:
+        key = (keys or {}).get(key_id)
+        if key is None:
+            return Violation("T3", f"trace signed with unknown key id {key_id!r}")
+    else:
+        key = sign_key
+        if key is None:
+            return Violation("T3", "trace is signed but no key was provided to verify it")
+    expected = hmac.new(key, root.encode("utf-8"), hashlib.sha256).hexdigest()
+    if not hmac.compare_digest(expected, str(entry.get("signature", ""))):
+        which = f" (key id {key_id!r})" if key_id is not None else ""
+        return Violation("T3", f"trace signature is invalid{which}")
+    return None
+
+
+def _verify_ed25519_signature(
+    entry: dict[str, Any],
+    root: str,
+    verifiers: dict[str, bytes] | None,
+) -> Violation | None:
+    """Verify one ``ed25519`` seal signature entry against a *trusted* public
+    key supplied out of band (never the key embedded in the entry, which a
+    forger controls). ``verifiers`` maps ``key_id`` to trusted public-key bytes.
+    Returns a ``T3`` Violation, or ``None`` if it verifies."""
+    key_id = entry.get("key_id")
+    public_key = (verifiers or {}).get(key_id) if key_id is not None else (
+        next(iter(verifiers.values())) if verifiers else None
+    )
+    if public_key is None:
+        which = f" for key id {key_id!r}" if key_id is not None else ""
+        return Violation(
+            "T3", f"trace has an ed25519 signature but no trusted public key was provided{which}"
+        )
+    # Lazy import: the public-key backend needs `cryptography` (optional extra),
+    # so it is only imported when an ed25519 signature is actually verified.
+    from intentflow.signing import verify_root
+
+    if not verify_root(root, str(entry.get("signature", "")), public_key):
+        which = f" (key id {key_id!r})" if key_id is not None else ""
+        return Violation("T3", f"trace ed25519 signature is invalid{which}")
+    return None
+
+
 def _check_trace_chain(
     trace: list[dict[str, Any]],
     chain: dict[str, Any] | None = None,
     sign_key: bytes | None = None,
+    keys: dict[str, bytes] | None = None,
+    verifiers: "dict[str, bytes] | None" = None,
 ) -> list[Violation]:
-    """Recompute the hash chain independently and verify any seal/signature.
+    """Recompute the hash chain independently and verify any seal signatures.
 
     This makes the trace tamper-*evident* on its own: an edited, deleted, or
-    reordered event breaks the chain regardless of the plan. A valid HMAC
-    signature additionally proves the trace was sealed by a key holder."""
+    reordered event breaks the chain regardless of the plan. A valid signature
+    additionally proves the trace was sealed by a key holder. HMAC signatures
+    are verified with ``sign_key`` (the default, keyless case) or a named key
+    from ``keys`` (selected by the entry's ``key_id``, so rotation keeps old
+    witnesses verifiable); Ed25519 signatures are verified with public keys from
+    ``verifiers`` (see :mod:`intentflow.signing`)."""
     violations: list[Violation] = []
     prev = GENESIS_HASH
     for event in trace:
@@ -109,16 +168,16 @@ def _check_trace_chain(
             violations.append(
                 Violation("T3", "sealed trace length does not match the trace")
             )
-        signature = chain.get("signature")
-        if signature is not None:
-            if sign_key is None:
-                violations.append(
-                    Violation("T3", "trace is signed but no key was provided to verify it")
-                )
+        for entry in chain.get("signatures", []):
+            algo = entry.get("algo")
+            if algo == "hmac-sha256":
+                v = _verify_hmac_signature(entry, prev, sign_key, keys)
+            elif algo == "ed25519":
+                v = _verify_ed25519_signature(entry, prev, verifiers)
             else:
-                expected = hmac.new(sign_key, prev.encode("utf-8"), hashlib.sha256).hexdigest()
-                if not hmac.compare_digest(expected, signature):
-                    violations.append(Violation("T3", "trace signature is invalid"))
+                v = Violation("T3", f"trace has an unknown signature algorithm {algo!r}")
+            if v is not None:
+                violations.append(v)
     return violations
 
 
@@ -342,9 +401,17 @@ def _check_format_versions(
 
 
 def audit_result(
-    plan: dict[str, Any], result: dict[str, Any], sign_key: bytes | None = None
+    plan: dict[str, Any],
+    result: dict[str, Any],
+    sign_key: bytes | None = None,
+    keys: dict[str, bytes] | None = None,
+    verifiers: dict[str, bytes] | None = None,
 ) -> dict[str, Any]:
-    """Audit one goal result against its compiled plan."""
+    """Audit one goal result against its compiled plan.
+
+    ``sign_key`` verifies a keyless HMAC seal; ``keys`` (``{key_id: key}``)
+    verifies rotated, key-id'd HMAC seals; ``verifiers`` (``{key_id: public_key}``)
+    verifies Ed25519 seals. See ``docs/trace-signing.md``."""
     # Version compatibility gates everything else: if the auditor does not
     # understand the plan/result shape, no downstream check is trustworthy.
     version_violations = _check_format_versions(plan, result)
@@ -365,7 +432,7 @@ def audit_result(
     trace = result.get("trace", [])
     violations = (
         _check_trace_integrity(trace)
-        + _check_trace_chain(trace, result.get("trace_chain"), sign_key)
+        + _check_trace_chain(trace, result.get("trace_chain"), sign_key, keys, verifiers)
         + _check_action_governance(plan, trace)
         + _check_evidence_citations(result)
         + _check_status_consistency(result)
@@ -382,10 +449,16 @@ def audit_result(
 
 
 def audit_document(
-    document: dict[str, Any], result: dict[str, Any], sign_key: bytes | None = None
+    document: dict[str, Any],
+    result: dict[str, Any],
+    sign_key: bytes | None = None,
+    keys: dict[str, bytes] | None = None,
+    verifiers: dict[str, bytes] | None = None,
 ) -> dict[str, Any]:
     """Audit a result file (single goal or pipeline) against a compiled
-    document. Returns an aggregate report."""
+    document. Returns an aggregate report. ``sign_key``/``keys``/``verifiers``
+    supply the HMAC and Ed25519 keys used to verify any trace seal (see
+    ``audit_result``)."""
     plans = {plan["goal"]: plan for plan in document["goals"]}
     if "pipeline" in result:
         reports = []
@@ -405,7 +478,7 @@ def audit_document(
                     }
                 )
                 continue
-            reports.append(audit_result(plan, stage, sign_key))
+            reports.append(audit_result(plan, stage, sign_key, keys, verifiers))
         return {
             "pipeline": result["pipeline"],
             "conformant": all(r["conformant"] for r in reports),
@@ -423,4 +496,4 @@ def audit_document(
                 }
             ],
         }
-    return audit_result(plan, result, sign_key)
+    return audit_result(plan, result, sign_key, keys, verifiers)
