@@ -80,6 +80,14 @@ from intentflow.tools import (
 )
 from intentflow.formatter import format_file, format_source
 from intentflow.linter import lint_program
+from intentflow.trace import (
+    CANONICAL_PHASES,
+    GENESIS_HASH,
+    KNOWN_EVENTS,
+    Event,
+    Trace,
+    link_hash,
+)
 from intentflow.runtime import (
     GoalRuntime,
     SimulationRuntime,
@@ -89,6 +97,12 @@ from intentflow.runtime import (
 from intentflow.api import IntentFlowProgram, load, load_source
 
 __all__ = [
+    "CANONICAL_PHASES",
+    "Event",
+    "GENESIS_HASH",
+    "KNOWN_EVENTS",
+    "Trace",
+    "link_hash",
     "ActionDenied",
     "ActionGate",
     "ActionPolicy",

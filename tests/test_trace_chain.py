@@ -8,7 +8,8 @@ import copy
 from intentflow.auditor import _check_trace_chain, audit_document
 from intentflow.compiler import compile_program
 from intentflow.parser import parse_file
-from intentflow.runtime import GENESIS_HASH, GoalRuntime
+from intentflow.runtime import GoalRuntime
+from intentflow.trace import GENESIS_HASH
 
 
 def _doc_and_result(sign_key: bytes | None = None):

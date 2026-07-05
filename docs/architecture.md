@@ -187,12 +187,16 @@ Three mechanisms keep the runtime honest beyond the plan:
   carries the judge's name and a rationale, and the verification result keeps
   ``machine`` and ``judged`` tallies apart so a proof is never confused with a
   model's opinion. Without a judge, judged rules are recorded as *skipped*.
-- **Hash-chained traces** (`runtime.Trace`). Each event stores
-  ``sha256(prev_hash || canonical(event))``; the auditor recomputes the chain
-  from genesis, catching accidental corruption, truncation, or reordering with
-  no plan required. The links live in the trace, so the bare chain is integrity,
-  not authenticity — a forger could recompute it. ``--sign-trace`` HMAC-seals
-  the root out of band, so a key holder can *detect* (not prevent) edits.
+- **Hash-chained traces** (`trace.Trace`). The trace primitives — the chain,
+  the canonical phase order, and the event vocabulary (`trace.Event`) — live in
+  `trace.py`, the project's third contract artifact alongside source and plan.
+  Each event stores ``sha256(prev_hash || canonical(event))``; the auditor
+  recomputes the chain from genesis, catching accidental corruption, truncation,
+  or reordering with no plan required, and depends only on `trace.py` — never on
+  the runtime it verifies. The links live in the trace, so the bare chain is
+  integrity, not authenticity — a forger could recompute it. ``--sign-trace``
+  HMAC-seals the root out of band, so a key holder can *detect* (not prevent)
+  edits.
 
 ### Embedding (`api.py`)
 

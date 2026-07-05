@@ -32,7 +32,7 @@ import hmac
 from dataclasses import dataclass
 from typing import Any
 
-from intentflow.runtime import CANONICAL_PHASES, GENESIS_HASH, link_hash
+from intentflow.trace import CANONICAL_PHASES, GENESIS_HASH, Event, link_hash
 
 #: Statuses for which the run reached verification/uncertainty phases.
 _EXECUTED_STATUSES = ("completed", "needs_human", "blocked", "failed_verification")
@@ -106,7 +106,7 @@ def _check_trace_integrity(trace: list[dict[str, Any]]) -> list[Violation]:
         violations.append(
             Violation("T1", "trace sequence numbers are not contiguous from 1")
         )
-    started = [event["phase"] for event in trace if event["event"] == "phase_started"]
+    started = [event["phase"] for event in trace if event["event"] == Event.PHASE_STARTED]
     deduped: list[str] = []
     for phase in started:
         if not deduped or deduped[-1] != phase:
@@ -133,9 +133,9 @@ def _check_action_governance(
     granted: set[str] = set()
     for event in trace:
         action = event["detail"].get("action")
-        if event["event"] == "approval_granted":
+        if event["event"] == Event.APPROVAL_GRANTED:
             granted.add(action)
-        if event["event"] != "tool_invoked":
+        if event["event"] != Event.TOOL_INVOKED:
             continue
         if action in denied:
             violations.append(
@@ -179,7 +179,7 @@ def _check_uncertainty_coverage(
     evaluated = {
         event["detail"].get("condition")
         for event in trace
-        if event["event"] in ("rule_evaluated", "rule_not_evaluable")
+        if event["event"] in (Event.RULE_EVALUATED, Event.RULE_NOT_EVALUABLE)
     }
     return [
         Violation(
@@ -199,7 +199,7 @@ def _check_verification_coverage(
     checked = {
         event["detail"].get("id")
         for event in trace
-        if event["event"] == "check_evaluated"
+        if event["event"] == Event.CHECK_EVALUATED
     }
     for rule in plan["verification_policy"]["rules"]:
         if rule["rule_id"] not in checked:
@@ -209,7 +209,7 @@ def _check_verification_coverage(
     failed_in_trace = {
         event["detail"]["id"]
         for event in trace
-        if event["event"] == "check_evaluated" and event["detail"].get("status") == "fail"
+        if event["event"] == Event.CHECK_EVALUATED and event["detail"].get("status") == "fail"
     }
     reported = {
         check["id"]: check["status"]

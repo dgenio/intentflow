@@ -26,6 +26,7 @@ from typing import Any
 from intentflow import iflow_ast as ir
 from intentflow._version import __version__
 from intentflow.actions import default_registry
+from intentflow.trace import CANONICAL_PHASES
 from intentflow.iflow_ast import (
     ActionPolicy,
     ActionRule,
@@ -52,22 +53,10 @@ from intentflow.iflow_ast import (
 PLAN_VERSION = "0.2"
 
 #: The phase order every conformant run follows (embedded in each plan and
-#: checked by the auditor).
-EXECUTION_PHASES: tuple[str, ...] = (
-    "parse",
-    "analyze",
-    "compile",
-    "prepare_context",
-    "collect_evidence",
-    "build_messages",
-    "call_backend",
-    "parse_output",
-    "verify_output",
-    "apply_uncertainty_policy",
-    "enforce_action_policy",
-    "finalize",
-    "trace",
-)
+#: checked by the auditor). The canonical definition lives in
+#: :mod:`intentflow.trace` — the trace/execution contract owns it — and is
+#: re-exported here under its plan-facing name for plan emission.
+EXECUTION_PHASES: tuple[str, ...] = CANONICAL_PHASES
 
 _THRESHOLD_RE = re.compile(
     r"^if\s+([a-z_]+)\s*(<=|>=|<|>|==)\s*([0-9]*\.?[0-9]+)\s+([a-z_]\w*)$"

@@ -4,6 +4,22 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [Unreleased]
+
+### Added
+- **`intentflow/trace.py`**: trace primitives (`Trace`, `link_hash`,
+  `GENESIS_HASH`, `CANONICAL_PHASES`) extracted into a dedicated module, plus a
+  shared event vocabulary (`Event` constants and the `KNOWN_EVENTS` set). The
+  auditor now depends on this module instead of importing chain primitives from
+  the runtime it verifies. `Trace`, `link_hash`, `GENESIS_HASH`,
+  `CANONICAL_PHASES`, `Event`, and `KNOWN_EVENTS` are exported from the package
+  root.
+
+### Changed
+- Trace event names are now defined once as `trace.Event` constants and shared
+  by the runtime, the action gate, and the auditor (previously duplicated string
+  literals across three modules). Hash output is unchanged.
+
 ## [0.6.0] - 2026-06-14
 
 ### Added

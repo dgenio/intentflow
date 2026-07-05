@@ -36,7 +36,6 @@ A run always ends in exactly one status:
 from __future__ import annotations
 
 import hashlib
-import hmac
 import json
 import operator
 from typing import Any, Callable
@@ -48,12 +47,9 @@ from intentflow.backends import (
     SimulatedCognition,
     assemble_messages,
 )
-from intentflow.compiler import EXECUTION_PHASES
 from intentflow.judges import Judge
 from intentflow.tools import ActionDenied, ActionGate, Approver, ToolError, ToolRegistry
-
-#: The phase order every conformant run must follow (checked by the auditor).
-CANONICAL_PHASES: tuple[str, ...] = EXECUTION_PHASES
+from intentflow.trace import Event, Trace
 
 #: Statuses a run can end in.
 RUN_STATUSES: tuple[str, ...] = (
@@ -72,82 +68,6 @@ _OPS: dict[str, Callable[[float, float], bool]] = {
     ">=": operator.ge,
     "==": operator.eq,
 }
-
-
-#: The first link of every trace hash chain (no prior event).
-GENESIS_HASH = "0" * 64
-
-#: Keys that make up an event's *core* — the part that is hash-chained. The
-#: ``hash``/``prev_hash`` links and presentation-only tags (e.g. ``stage``)
-#: are excluded so the chain is stable across serialization and pipelining.
-_CORE_KEYS = ("seq", "phase", "event", "detail")
-
-
-def _event_core(event: dict[str, Any]) -> dict[str, Any]:
-    return {k: event.get(k) for k in _CORE_KEYS}
-
-
-def link_hash(prev_hash: str, event: dict[str, Any]) -> str:
-    """The hash that chains ``event`` to its predecessor.
-
-    ``sha256(prev_hash || canonical(core))`` — so any edit, deletion, or
-    reordering is detected when the chain is recomputed (unless a forger also
-    recomputes every downstream link; see :class:`Trace`). Canonicalization is
-    JSON with sorted keys, so the chain survives a round-trip through disk.
-    """
-    payload = prev_hash + json.dumps(
-        _event_core(event), sort_keys=True, default=str
-    )
-    return hashlib.sha256(payload.encode("utf-8")).hexdigest()
-
-
-class Trace:
-    """An auditable, append-only, hash-chained record of a run.
-
-    Each event carries ``prev_hash`` and ``hash`` forming a chain rooted at
-    :data:`GENESIS_HASH`. Recomputing the chain detects accidental corruption,
-    truncation, and reordering without the program. The links live *inside* the
-    trace, though, so a motivated forger can edit an event and recompute every
-    downstream hash — the bare chain is integrity, not authenticity. Sealing
-    the root out of band closes that gap: with a signing key, ``seal()`` adds an
-    HMAC over the root so anyone holding the key can *detect* (not prevent)
-    edits, even to runs they did not execute.
-    """
-
-    def __init__(self, sign_key: bytes | None = None) -> None:
-        self.events: list[dict[str, Any]] = []
-        self._prev = GENESIS_HASH
-        self._sign_key = sign_key
-
-    def record(self, phase: str, event: str, detail: dict[str, Any] | None = None) -> None:
-        entry = {
-            "seq": len(self.events) + 1,
-            "phase": phase,
-            "event": event,
-            "detail": detail or {},
-        }
-        entry["prev_hash"] = self._prev
-        entry["hash"] = link_hash(self._prev, entry)
-        self._prev = entry["hash"]
-        self.events.append(entry)
-
-    def to_list(self) -> list[dict[str, Any]]:
-        return list(self.events)
-
-    def seal(self) -> dict[str, Any]:
-        """A compact, verifiable summary of the chain: algorithm, length,
-        root hash, and (if a key was supplied) an HMAC signature over it."""
-        signature = None
-        if self._sign_key is not None:
-            signature = hmac.new(
-                self._sign_key, self._prev.encode("utf-8"), hashlib.sha256
-            ).hexdigest()
-        return {
-            "algo": "sha256-chain",
-            "length": len(self.events),
-            "root": self._prev,
-            "signature": signature,
-        }
 
 
 def calibrate(raw: float, policy: dict[str, Any]) -> float:
@@ -247,7 +167,7 @@ class GoalRuntime:
 
     def _phase(self, name: str, title: str) -> None:
         self._say(f"\n=== phase: {name} — {title} ===")
-        self.trace.record(name, "phase_started", {"title": title})
+        self.trace.record(name, Event.PHASE_STARTED, {"title": title})
 
     def _phase_done(self, name: str, status: str = "completed", detail: str = "") -> None:
         self.phases.append({"name": name, "status": status, "detail": detail})
@@ -257,12 +177,12 @@ class GoalRuntime:
     def run(self) -> dict[str, Any]:
         for pre in self.pre_phases:
             self.trace.record(
-                pre["name"], "phase_started", {"title": pre.get("detail", "")}
+                pre["name"], Event.PHASE_STARTED, {"title": pre.get("detail", "")}
             )
             self.phases.append(dict(pre))
         self.trace.record(
             self.pre_phases[-1]["name"],
-            "run_started",
+            Event.RUN_STARTED,
             {"goal": self.plan["goal"], "backend": self.backend.name},
         )
         self._say(
@@ -297,7 +217,7 @@ class GoalRuntime:
             self._say(f"  prioritizing in context: {item}")
         for item in policy.get("preserve", []):
             self._say(f"  pinned (never evicted): {item}")
-        self.trace.record("prepare_context", "policy_applied", policy)
+        self.trace.record("prepare_context", Event.POLICY_APPLIED, policy)
         self._phase_done("prepare_context")
 
     def _collect_evidence(self) -> None:
@@ -320,28 +240,28 @@ class GoalRuntime:
                 self._say(
                     f"  collected {item['id']} from {source} (origin: {item['origin']})"
                 )
-            self.trace.record("collect_evidence", "evidence_collected", item)
+            self.trace.record("collect_evidence", Event.EVIDENCE_COLLECTED, item)
         for source in policy["optional"]:
             item = self._collect_one(f"E{index}", source, "optional", distrusted)
             if item["origin"] in ("blocked", "missing"):
                 self._say(f"  optional source {source!r} unavailable; continuing")
-                self.trace.record("collect_evidence", "evidence_unavailable", item)
+                self.trace.record("collect_evidence", Event.EVIDENCE_UNAVAILABLE, item)
                 continue
             index += 1
             self.evidence.append(item)
             self._say(f"  collected {item['id']} from {source} (optional)")
-            self.trace.record("collect_evidence", "evidence_collected", item)
+            self.trace.record("collect_evidence", Event.EVIDENCE_COLLECTED, item)
         for source in dict.fromkeys(policy["distrusted"]):
             self._say(f"  distrusted source noted: {source} (will not be sole support)")
-            self.trace.record("collect_evidence", "source_distrusted", {"source": source})
+            self.trace.record("collect_evidence", Event.SOURCE_DISTRUSTED, {"source": source})
         self.signals["missing_evidence"] = bool(missing)
         if missing:
             self.trace.record(
-                "collect_evidence", "missing_evidence", {"sources": missing}
+                "collect_evidence", Event.MISSING_EVIDENCE, {"sources": missing}
             )
         if not self.evidence and not policy["required"]:
             self._say("  warning: no required evidence declared")
-            self.trace.record("collect_evidence", "no_evidence_required", {})
+            self.trace.record("collect_evidence", Event.NO_EVIDENCE_REQUIRED, {})
         self._phase_done(
             "collect_evidence",
             detail=f"{len(self.evidence)} item(s), {len(missing)} missing",
@@ -370,7 +290,7 @@ class GoalRuntime:
                 except ToolError as exc:
                     self.trace.record(
                         "collect_evidence",
-                        "tool_failed",
+                        Event.TOOL_FAILED,
                         {"source": source, "error": str(exc)},
                     )
                     return {**base, "summary": None, "origin": "missing"}
@@ -397,7 +317,7 @@ class GoalRuntime:
         if record_prompts:
             detail["system"] = system
             detail["user"] = user
-        self.trace.record("build_messages", "messages_built", detail)
+        self.trace.record("build_messages", Event.MESSAGES_BUILT, detail)
         self._say(f"  system: {len(system)} chars, user: {len(user)} chars")
         self._phase_done("build_messages")
 
@@ -410,12 +330,12 @@ class GoalRuntime:
         except Exception as exc:
             self._backend_error = str(exc)
             self._say(f"  backend error: {exc}")
-            self.trace.record("call_backend", "backend_failed", {"error": str(exc)})
+            self.trace.record("call_backend", Event.BACKEND_FAILED, {"error": str(exc)})
             self._phase_done("call_backend", "failed", str(exc))
             return False
         self.trace.record(
             "call_backend",
-            "backend_responded",
+            Event.BACKEND_RESPONDED,
             {
                 "model": self.response.model,
                 "latency_ms": self.response.latency_ms,
@@ -437,7 +357,7 @@ class GoalRuntime:
             self._backend_error = "backend reply is not a JSON object"
             self.trace.record(
                 "parse_output",
-                "parse_failed",
+                Event.PARSE_FAILED,
                 {"raw_prefix": (self.response.raw_text[:200] if self.response else "")},
             )
             self._say("  could not parse the backend reply as JSON")
@@ -457,7 +377,7 @@ class GoalRuntime:
         dropped = [c for c in cited if c not in valid_ids]
         if dropped:
             self.trace.record(
-                "parse_output", "citations_dropped", {"citations": dropped}
+                "parse_output", Event.CITATIONS_DROPPED, {"citations": dropped}
             )
             self._say(f"  dropped citations to uncollected evidence: {dropped}")
 
@@ -480,10 +400,10 @@ class GoalRuntime:
         for key in extras:
             del self.outputs[key]
         if extras:
-            self.trace.record("parse_output", "extra_fields_dropped", {"fields": extras})
+            self.trace.record("parse_output", Event.EXTRA_FIELDS_DROPPED, {"fields": extras})
         self.trace.record(
             "parse_output",
-            "output_parsed",
+            Event.OUTPUT_PARSED,
             {
                 "fields": sorted(self.outputs),
                 "citations": self.citations,
@@ -504,7 +424,7 @@ class GoalRuntime:
              "detail": "no parsed output"}
         )
         self.trace.record(
-            "apply_uncertainty_policy", "phase_started", {"title": "skipped"}
+            "apply_uncertainty_policy", Event.PHASE_STARTED, {"title": "skipped"}
         )
         return {"passed": False, "checks": [], "tiers": {}}
 
@@ -529,7 +449,7 @@ class GoalRuntime:
             self._say(f"  {check['id']} [{check['status'].upper()}]{label} {check['rule']}")
             # Record a snapshot, not the live dict: the trace must stay an
             # independent witness of what happened at this moment.
-            self.trace.record("verify_output", "check_evaluated", dict(check))
+            self.trace.record("verify_output", Event.CHECK_EVALUATED, dict(check))
 
         passed = all(c["status"] != "fail" for c in checks)
         # Keep the two trust tiers visible and separate: a machine check is a
@@ -539,7 +459,7 @@ class GoalRuntime:
             tier: self._tier_summary(checks, tier) for tier in ("machine", "judged")
         }
         self.trace.record(
-            "verify_output", "checklist_completed", {"passed": passed, "tiers": tiers}
+            "verify_output", Event.CHECKLIST_COMPLETED, {"passed": passed, "tiers": tiers}
         )
         self._phase_done("verify_output", detail="passed" if passed else "failed")
         return {"passed": passed, "checks": checks, "tiers": tiers}
@@ -667,7 +587,7 @@ class GoalRuntime:
             "observed": observed,
         }
         self.uncertainty_decisions.append(decision)
-        event = "rule_evaluated" if evaluable else "rule_not_evaluable"
+        event = Event.RULE_EVALUATED if evaluable else Event.RULE_NOT_EVALUABLE
         self.trace.record("apply_uncertainty_policy", event, decision)
 
     def _apply_threshold_rule(self, rule: dict[str, Any]) -> None:
@@ -737,18 +657,18 @@ class GoalRuntime:
             self.escalations.append(escalation)
             self._status_hints.add("needs_human")
             self._say("    -> escalated to human (run status will be needs_human)")
-            self.trace.record("apply_uncertainty_policy", "human_escalation", escalation)
+            self.trace.record("apply_uncertainty_policy", Event.HUMAN_ESCALATION, escalation)
         elif action == "block_action":
             block = {"reason": condition, "action": "block_action"}
             self.escalations.append(block)
             self._status_hints.add("blocked")
             self._say("    -> BLOCKED by policy (run status will be blocked)")
-            self.trace.record("apply_uncertainty_policy", "action_blocked_by_policy", block)
+            self.trace.record("apply_uncertainty_policy", Event.ACTION_BLOCKED_BY_POLICY, block)
         else:
             self._say(f"    -> action '{action}' recorded (no executor in this runtime)")
             self.trace.record(
                 "apply_uncertainty_policy",
-                "action_recorded",
+                Event.ACTION_RECORDED,
                 {"action": action, "reason": condition},
             )
 
@@ -762,13 +682,13 @@ class GoalRuntime:
         invoked, blocked, approved = [], [], []
         for event in self.trace.to_list():
             detail = event.get("detail", {})
-            if event["event"] == "tool_invoked":
+            if event["event"] == Event.TOOL_INVOKED:
                 invoked.append(detail.get("action"))
-            elif event["event"] in ("action_blocked", "approval_denied"):
+            elif event["event"] in (Event.ACTION_BLOCKED, Event.APPROVAL_DENIED):
                 blocked.append(
                     {"action": detail.get("action"), "reason": detail.get("reason")}
                 )
-            elif event["event"] == "approval_granted":
+            elif event["event"] == Event.APPROVAL_GRANTED:
                 approved.append(detail.get("action"))
         violations = [a for a in invoked if a in denied]
         self.action_decisions = {
@@ -779,7 +699,7 @@ class GoalRuntime:
             "violations": violations,
         }
         self.trace.record(
-            "enforce_action_policy", "policy_reviewed", self.action_decisions
+            "enforce_action_policy", Event.POLICY_REVIEWED, self.action_decisions
         )
         if violations:  # the gate makes this unreachable, but never trust one layer
             self._status_hints.add("blocked")
@@ -807,12 +727,12 @@ class GoalRuntime:
     def _finalize(self, verification: dict[str, Any]) -> dict[str, Any]:
         self._phase("finalize", "resolve final status and assemble the result")
         status = self._resolve_status(verification)
-        self.trace.record("finalize", "status_resolved", {"status": status})
+        self.trace.record("finalize", Event.STATUS_RESOLVED, {"status": status})
         self._phase_done("finalize", detail=status)
 
         self._phase("trace", "seal the trace")
         self.trace.record(
-            "trace", "run_completed", {"status": status, "goal": self.plan["goal"]}
+            "trace", Event.RUN_COMPLETED, {"status": status, "goal": self.plan["goal"]}
         )
         self._phase_done("trace")
 
@@ -860,12 +780,12 @@ class GoalRuntime:
         identical ids (the wall-clock timestamp lives only in the saved trace
         artifact)."""
         requested = [
-            e["detail"]["action"] for e in trace_events if e["event"] == "tool_invoked"
+            e["detail"]["action"] for e in trace_events if e["event"] == Event.TOOL_INVOKED
         ]
         blocked = [
             {"action": e["detail"].get("action"), "reason": e["detail"].get("reason")}
             for e in trace_events
-            if e["event"] in ("action_blocked", "approval_denied")
+            if e["event"] in (Event.ACTION_BLOCKED, Event.APPROVAL_DENIED)
         ]
         digest = hashlib.sha256(
             json.dumps(
