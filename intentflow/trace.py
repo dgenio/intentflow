@@ -127,6 +127,41 @@ def _event_core(event: dict[str, Any]) -> dict[str, Any]:
     return {k: event.get(k) for k in _CORE_KEYS}
 
 
+def assert_json_native(value: Any, _path: str = "detail") -> None:
+    """Raise ``TypeError`` unless ``value`` is composed only of JSON-native
+    types (``dict`` with ``str`` keys, ``list``, ``str``, ``int``, ``float``,
+    ``bool``, ``None``).
+
+    Hashed trace material must be JSON-native so the canonical form is
+    well-defined and reproducible: ``json.dumps`` never has to fall back to a
+    Python-specific ``str()`` coercion of an arbitrary object, which would make
+    the hash silently depend on CPython's ``repr``. Enforcing the domain at
+    record time turns "the hash quietly widened to cover a new type" into a
+    loud error at the exact call site that introduced it. See
+    ``docs/adr/0001-canonical-json-hashing.md``.
+    """
+    # bool is a subclass of int; both are JSON-native, so no special-casing.
+    if value is None or isinstance(value, (str, int, float)):
+        return
+    if isinstance(value, dict):
+        for key, item in value.items():
+            if not isinstance(key, str):
+                raise TypeError(
+                    f"trace {_path}: JSON object key must be str, got "
+                    f"{type(key).__name__} {key!r}"
+                )
+            assert_json_native(item, f"{_path}.{key}")
+        return
+    if isinstance(value, list):
+        for index, item in enumerate(value):
+            assert_json_native(item, f"{_path}[{index}]")
+        return
+    raise TypeError(
+        f"trace {_path}: value is not JSON-native "
+        f"({type(value).__name__}: {value!r})"
+    )
+
+
 def link_hash(prev_hash: str, event: dict[str, Any]) -> str:
     """The hash that chains ``event`` to its predecessor.
 
@@ -134,6 +169,12 @@ def link_hash(prev_hash: str, event: dict[str, Any]) -> str:
     reordering is detected when the chain is recomputed (unless a forger also
     recomputes every downstream link; see :class:`Trace`). Canonicalization is
     JSON with sorted keys, so the chain survives a round-trip through disk.
+
+    :meth:`Trace.record` enforces (via :func:`assert_json_native`) that the
+    event core is JSON-native, so the ``default=str`` fallback below is
+    unreachable for any event the runtime records. It is retained defensively;
+    the format-versioned follow-up to ``docs/adr/0001-canonical-json-hashing.md``
+    removes it and tightens serialization to a documented cross-language form.
     """
     payload = prev_hash + json.dumps(
         _event_core(event), sort_keys=True, default=str
@@ -166,6 +207,9 @@ class Trace:
             "event": event,
             "detail": detail or {},
         }
+        # Enforce the JSON-native domain before the value enters the hash chain,
+        # so the canonical form stays well-defined (no silent str() coercion).
+        assert_json_native(entry["detail"], f"{event}.detail")
         entry["prev_hash"] = self._prev
         entry["hash"] = link_hash(self._prev, entry)
         self._prev = entry["hash"]

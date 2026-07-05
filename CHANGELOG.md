@@ -15,10 +15,21 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   `CANONICAL_PHASES`, `Event`, and `KNOWN_EVENTS` are exported from the package
   root.
 
+- **Hashed-domain enforcement**: `trace.assert_json_native` rejects any trace
+  `detail` that is not composed of JSON-native types, enforced in `Trace.record`
+  so the canonical hash form can never silently depend on CPython's `str()`
+  coercion. Documented in `docs/adr/0001-canonical-json-hashing.md`.
+
 ### Changed
 - Trace event names are now defined once as `trace.Event` constants and shared
   by the runtime, the action gate, and the auditor (previously duplicated string
   literals across three modules). Hash output is unchanged.
+
+### Documented
+- `docs/adr/0001-canonical-json-hashing.md`: adopts RFC 8785 (JCS) as the target
+  canonical form for the (now enforced) JSON-native hashed domain, and defers
+  the byte-format migration to a version-gated follow-up. Hash bytes are
+  unchanged in this release.
 
 ## [0.6.0] - 2026-06-14
 

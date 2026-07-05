@@ -86,6 +86,7 @@ from intentflow.trace import (
     KNOWN_EVENTS,
     Event,
     Trace,
+    assert_json_native,
     link_hash,
 )
 from intentflow.runtime import (
@@ -102,6 +103,7 @@ __all__ = [
     "GENESIS_HASH",
     "KNOWN_EVENTS",
     "Trace",
+    "assert_json_native",
     "link_hash",
     "ActionDenied",
     "ActionGate",
