@@ -43,6 +43,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - **Breaking (plan shape)**: the plan/document version field is renamed
   `plan_version` → `format_version` (constant `PLAN_VERSION` → `PLAN_FORMAT_VERSION`)
   so both contract artifacts use one uniform, independently-versioned field name.
+- **Breaking (witness shape)**: `--trace-out` now writes the same canonical
+  witness envelope as `--trace-dir` (`{artifact, …, result}`) instead of a bare
+  result, and a multi-goal `--trace-out` run errors with guidance (use
+  `--trace-dir` or `--goal`) instead of writing an unauditable JSON list.
+  `audit` and `replay` now require the envelope and no longer sniff shapes;
+  `build_witness_envelope` is the single source for both flags.
 
 ### Documented
 - `docs/adr/0001-canonical-json-hashing.md`: adopts RFC 8785 (JCS) as the target

@@ -160,5 +160,8 @@ def test_cli_sign_trace_writes_trace_chain_signature(
         ]
     ) == 0
     capsys.readouterr()
-    result = json.loads(output.read_text())
-    assert result["trace_chain"]["signature"]
+    # --trace-out writes the canonical witness envelope; the run result (with its
+    # signed trace chain) is under "result".
+    envelope = json.loads(output.read_text())
+    assert envelope["artifact"] == "intentflow-trace"
+    assert envelope["result"]["trace_chain"]["signature"]

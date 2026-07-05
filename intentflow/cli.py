@@ -130,25 +130,26 @@ def cmd_compile(args: argparse.Namespace) -> int:
     return 0
 
 
-def _write_trace_artifact(
-    trace_dir: str, document: dict, result: dict, backend_name: str, program
-) -> str:
-    """Write a self-contained, inspectable witness of a run to ``trace_dir``.
+#: Discriminator + version marker for the on-disk witness envelope. Both
+#: ``--trace-dir`` and ``--trace-out`` write this one shape; ``audit``/``replay``
+#: key off ``artifact`` to unwrap it. The embedded result carries the
+#: format_version the auditor version-checks (see #38 / docs/formats.md).
+WITNESS_ARTIFACT = "intentflow-trace"
 
-    The artifact bundles the run result with provenance (source path and
-    hash, backend, timestamp, compiled-plan hash) so a third party can later
-    replay it with ``intentflow replay`` and verify it with
-    ``intentflow audit``."""
-    directory = Path(trace_dir)
-    directory.mkdir(parents=True, exist_ok=True)
-    label = result.get("goal") or result.get("pipeline") or "run"
-    trace_id = result.get("trace_id") or plan_hash(result)
-    timestamp = _dt.datetime.now(_dt.timezone.utc).strftime("%Y%m%dT%H%M%SZ")
-    path = directory / f"{label}-{timestamp}-{trace_id}.json"
-    artifact = {
-        "artifact": "intentflow-trace",
+
+def build_witness_envelope(document: dict, result: dict, backend_name: str, program) -> dict:
+    """The canonical on-disk witness: one run result wrapped with provenance.
+
+    Both ``--trace-dir`` and ``--trace-out`` emit exactly this shape, so a third
+    party can replay it with ``intentflow replay`` and verify it with
+    ``intentflow audit`` regardless of which flag produced it — no shape
+    heuristics on the happy path. The provenance (source path + hash, compiled
+    plan hash, backend, timestamp) lets the witness stand on its own; the
+    embedded ``result`` is the artifact the auditor checks."""
+    return {
+        "artifact": WITNESS_ARTIFACT,
         "intentflow_version": __version__,
-        "trace_id": trace_id,
+        "trace_id": result.get("trace_id") or plan_hash(result),
         "timestamp": _dt.datetime.now(_dt.timezone.utc).isoformat(),
         "source": program.source_name,
         "source_hash": source_hash(program.source_text),
@@ -157,7 +158,21 @@ def _write_trace_artifact(
         "status": result.get("status"),
         "result": result,
     }
-    path.write_text(json.dumps(artifact, indent=2), encoding="utf-8")
+
+
+def _write_trace_artifact(
+    trace_dir: str, document: dict, result: dict, backend_name: str, program
+) -> str:
+    """Write the canonical witness envelope to a generated path under
+    ``trace_dir`` (one file per result)."""
+    directory = Path(trace_dir)
+    directory.mkdir(parents=True, exist_ok=True)
+    label = result.get("goal") or result.get("pipeline") or "run"
+    trace_id = result.get("trace_id") or plan_hash(result)
+    timestamp = _dt.datetime.now(_dt.timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    path = directory / f"{label}-{timestamp}-{trace_id}.json"
+    envelope = build_witness_envelope(document, result, backend_name, program)
+    path.write_text(json.dumps(envelope, indent=2), encoding="utf-8")
     return str(path)
 
 
@@ -307,9 +322,23 @@ def cmd_run(args: argparse.Namespace) -> int:
             print(f"\ntrace written to {path}")
             print("  inspect it with 'intentflow replay', verify it with 'intentflow audit'")
     if args.trace_out:
-        payload = results[0] if len(results) == 1 else results
-        Path(args.trace_out).write_text(json.dumps(payload, indent=2), encoding="utf-8")
-        print(f"\nresult written to {args.trace_out}")
+        writable = [r for r in results if r["status"] != "failed_validation"]
+        if len(writable) != 1:
+            # --trace-out is one explicit path, so it takes exactly one witness.
+            # A multi-goal run (or a run where everything failed validation) has
+            # no single result to write here; direct the user to the per-result
+            # forms instead of silently writing a bare list audit cannot consume.
+            print(
+                f"error: --trace-out writes a single witness, but this run produced "
+                f"{len(writable)} auditable result(s); use --trace-dir (one file per "
+                f"result) or --goal NAME to select one goal",
+                file=sys.stderr,
+            )
+            return exit_code or 1
+        envelope = build_witness_envelope(document, writable[0], backend.name, program)
+        Path(args.trace_out).write_text(json.dumps(envelope, indent=2), encoding="utf-8")
+        print(f"\ntrace written to {args.trace_out}")
+        print("  inspect it with 'intentflow replay', verify it with 'intentflow audit'")
     return exit_code
 
 
@@ -397,8 +426,14 @@ def _load_trace_artifact(path: str) -> dict:
 
 def cmd_replay(args: argparse.Namespace) -> int:
     artifact = _load_trace_artifact(args.trace)
-    # Accept both a --trace-dir artifact and a bare --trace-out result.
-    result = artifact.get("result", artifact)
+    if not (isinstance(artifact, dict) and artifact.get("artifact") == WITNESS_ARTIFACT):
+        print(
+            "error: not an IntentFlow witness envelope; produce one with "
+            "'intentflow run ... --trace-out FILE' or '--trace-dir DIR'",
+            file=sys.stderr,
+        )
+        return 2
+    result = artifact["result"]
     if args.json:
         print(json.dumps(artifact, indent=2))
         return 0
@@ -484,17 +519,23 @@ def cmd_audit(args: argparse.Namespace) -> int:
     program = _load(args.file)
     document = _compile_or_fail(program)
     try:
-        result = json.loads(Path(args.result).read_text(encoding="utf-8"))
+        envelope = json.loads(Path(args.result).read_text(encoding="utf-8"))
     except FileNotFoundError:
         print(f"error: result file not found: {args.result}", file=sys.stderr)
         return 2
     except json.JSONDecodeError as exc:
         print(f"error: result file is not valid JSON: {exc}", file=sys.stderr)
         return 2
-    # A --trace-dir artifact wraps the run result under "result"; unwrap it so
-    # the same audit works on either a --trace-out file or a --trace-dir one.
-    if "result" in result and "goal" not in result and "pipeline" not in result:
-        result = result["result"]
+    # Both --trace-dir and --trace-out write the one canonical witness envelope,
+    # so unwrapping is a single check — no shape sniffing.
+    if not (isinstance(envelope, dict) and envelope.get("artifact") == WITNESS_ARTIFACT):
+        print(
+            "error: not an IntentFlow witness envelope; produce one with "
+            "'intentflow run ... --trace-out FILE' or '--trace-dir DIR'",
+            file=sys.stderr,
+        )
+        return 2
+    result = envelope["result"]
     # Verify any HMAC trace signature if the same key is available.
     key = os.environ.get("IFLOW_TRACE_KEY")
     sign_key = key.encode("utf-8") if key else None

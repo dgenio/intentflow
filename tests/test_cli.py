@@ -229,6 +229,68 @@ def test_run_sign_and_audit_roundtrip(tmp_path, monkeypatch) -> None:
     assert main(["audit", TRIAGE, str(artifact)]) == 0
 
 
+# -- unified witness envelope (issue #108) -------------------------------------
+
+MULTIGOAL = "examples/incident_pipeline.iflow"
+
+
+def test_trace_out_writes_the_canonical_envelope(tmp_path) -> None:
+    out = tmp_path / "witness.json"
+    assert main(["run", TRIAGE, "--simulate", "--trace-out", str(out)]) == 0
+    envelope = json.loads(out.read_text())
+    # Same shape as a --trace-dir artifact: an intentflow-trace envelope with
+    # provenance and the run result under "result".
+    assert envelope["artifact"] == "intentflow-trace"
+    assert envelope["plan_hash"] and envelope["source_hash"] and envelope["trace_id"]
+    assert envelope["result"]["goal"] == "TriageGitHubIssue"
+
+
+def test_trace_out_and_trace_dir_produce_the_same_shape(tmp_path) -> None:
+    out = tmp_path / "witness.json"
+    trace_dir = tmp_path / "traces"
+    main(["run", TRIAGE, "--simulate", "--trace-out", str(out)])
+    main(["run", TRIAGE, "--simulate", "--trace-dir", str(trace_dir)])
+    from_out = json.loads(out.read_text())
+    from_dir = json.loads(next(trace_dir.glob("*.json")).read_text())
+    assert from_out.keys() == from_dir.keys()
+    assert from_out["artifact"] == from_dir["artifact"] == "intentflow-trace"
+
+
+def test_trace_out_audit_roundtrip(tmp_path) -> None:
+    out = tmp_path / "witness.json"
+    assert main(["run", TRIAGE, "--simulate", "--trace-out", str(out)]) == 0
+    # A --trace-out witness audits with no shape heuristics — same path as
+    # a --trace-dir one.
+    assert main(["audit", TRIAGE, str(out)]) == 0
+
+
+def test_multi_goal_trace_out_errors_with_guidance(tmp_path, capsys) -> None:
+    out = tmp_path / "witness.json"
+    rc = main(["run", MULTIGOAL, "--simulate", "--trace-out", str(out)])
+    assert rc != 0
+    err = capsys.readouterr().err
+    assert "--trace-dir" in err and "--goal" in err
+    assert not out.exists()
+
+
+def test_multi_goal_trace_out_with_goal_flag_writes_one_witness(tmp_path) -> None:
+    out = tmp_path / "witness.json"
+    assert main(
+        ["run", MULTIGOAL, "--simulate", "--goal", "DiagnoseIncident", "--trace-out", str(out)]
+    ) == 0
+    envelope = json.loads(out.read_text())
+    assert envelope["result"]["goal"] == "DiagnoseIncident"
+    assert main(["audit", MULTIGOAL, str(out)]) == 0
+
+
+def test_audit_rejects_a_non_envelope_file(tmp_path, capsys) -> None:
+    bare = tmp_path / "bare.json"
+    bare.write_text(json.dumps({"goal": "X", "status": "completed", "trace": []}))
+    rc = main(["audit", TRIAGE, str(bare)])
+    assert rc == 2
+    assert "witness envelope" in capsys.readouterr().err
+
+
 # -- explain / inspect / format -------------------------------------------------
 
 
