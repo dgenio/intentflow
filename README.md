@@ -199,6 +199,12 @@ the hash-chained event log (optionally HMAC-signed with `--sign-trace`). A
 multi-goal run has no single witness for `--trace-out`, so use `--trace-dir` or
 `--goal NAME` to select one.
 
+For long or crash-prone runs, `--trace-stream FILE` appends each event to a
+JSONL file as it happens (flushed per event), so a hard kill still leaves a
+prefix that verifies from genesis; `intentflow audit SOURCE stream.jsonl`
+auto-detects the stream and reports whether it is a complete run or a valid
+prefix.
+
 ```bash
 intentflow replay traces/TriageGitHubIssue-*.json   # the run as a story
 intentflow audit  examples/opensource_triage.iflow traces/TriageGitHubIssue-*.json

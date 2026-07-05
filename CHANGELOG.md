@@ -44,6 +44,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   (`IFLOW_TRACE_PUBLIC_KEY`) — no shared secret. HMAC and Ed25519 seals compose
   (dual-signing). The core import path stays free of `cryptography` (lazy,
   function-scoped import), verified by test.
+- **Streamed JSONL trace sink**: `intentflow run --trace-stream PATH` (API:
+  `trace_sink=`) appends each event to a JSONL file as it is recorded and
+  flushes, so a hard crash leaves a chain-verifiable prefix and long runs need
+  not hold the whole trace in memory. Writing fails closed
+  (`trace.TraceSinkError`). `auditor.verify_trace_stream` and `intentflow audit`
+  (auto-detecting a JSONL stream) chain-verify a stream and distinguish a
+  complete run from a valid-but-truncated prefix.
 
 ### Changed
 - Trace event names are now defined once as `trace.Event` constants and shared

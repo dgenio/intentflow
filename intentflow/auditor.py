@@ -36,6 +36,7 @@ from __future__ import annotations
 
 import hashlib
 import hmac
+import json
 from dataclasses import dataclass
 from typing import Any
 
@@ -182,6 +183,35 @@ def _check_trace_chain(
             if v is not None:
                 violations.append(v)
     return violations
+
+
+def verify_trace_stream(lines: "list[str] | str") -> dict[str, Any]:
+    """Chain-verify a streamed JSONL trace (issue #82), distinguishing a
+    complete run from a truncated-but-valid prefix.
+
+    A streamed trace is a hash chain written one event per line as the run
+    proceeds, so a process killed mid-run leaves a prefix that still verifies
+    from genesis. Pass the file contents (a string) or a list of lines. Returns
+    ``{events, complete, chain_ok, violations}``: ``complete`` is True only when
+    a terminal ``run_completed`` event is present; ``chain_ok`` reports whether
+    the events seen form an intact chain."""
+    if isinstance(lines, str):
+        raw_lines = lines.splitlines()
+    else:
+        raw_lines = list(lines)
+    events: list[dict[str, Any]] = []
+    for line in raw_lines:
+        line = line.strip()
+        if line:
+            events.append(json.loads(line))
+    violations = _check_trace_integrity(events) + _check_trace_chain(events)
+    complete = any(e.get("event") == Event.RUN_COMPLETED for e in events)
+    return {
+        "events": len(events),
+        "complete": complete,
+        "chain_ok": not violations,
+        "violations": [{"code": v.code, "message": v.message} for v in violations],
+    }
 
 
 def _check_trace_integrity(trace: list[dict[str, Any]]) -> list[Violation]:

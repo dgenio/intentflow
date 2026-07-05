@@ -29,6 +29,20 @@ import json
 from typing import Any, Protocol
 
 
+class TraceSinkError(RuntimeError):
+    """A streamed trace event could not be persisted. Raised fail-closed: a
+    governed run that cannot durably record its witness must stop, not continue
+    silently with an incomplete on-disk record."""
+
+
+class TraceSink(Protocol):
+    """A minimal writable text sink (a file object satisfies this)."""
+
+    def write(self, data: str) -> Any: ...
+
+    def flush(self) -> Any: ...
+
+
 class TraceSigner(Protocol):
     """A pluggable signer over the trace chain root.
 
@@ -221,6 +235,7 @@ class Trace:
         sign_key: bytes | None = None,
         key_id: str | None = None,
         signers: "list[TraceSigner] | None" = None,
+        sink: "TraceSink | None" = None,
     ) -> None:
         self.events: list[dict[str, Any]] = []
         self._prev = GENESIS_HASH
@@ -228,6 +243,10 @@ class Trace:
         self._key_id = key_id
         #: Additional (e.g. public-key) signers applied to the root at seal time.
         self._signers: list[TraceSigner] = list(signers or [])
+        #: Optional append-only JSONL sink: each event is written and flushed as
+        #: it is recorded, so a hard crash still leaves a chain-verifiable prefix
+        #: and long runs need not hold the whole trace in memory to persist it.
+        self._sink = sink
 
     def record(self, phase: str, event: str, detail: dict[str, Any] | None = None) -> None:
         entry = {
@@ -243,6 +262,16 @@ class Trace:
         entry["hash"] = link_hash(self._prev, entry)
         self._prev = entry["hash"]
         self.events.append(entry)
+        if self._sink is not None:
+            # Fail closed: if the witness cannot be persisted, stop the run
+            # rather than continue with an incomplete on-disk record.
+            try:
+                self._sink.write(json.dumps(entry) + "\n")
+                self._sink.flush()
+            except OSError as exc:
+                raise TraceSinkError(
+                    f"failed to stream trace event seq {entry['seq']}: {exc}"
+                ) from exc
 
     def to_list(self) -> list[dict[str, Any]]:
         return list(self.events)

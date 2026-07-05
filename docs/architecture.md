@@ -202,7 +202,10 @@ Three mechanisms keep the runtime honest beyond the plan:
   signature (optional ``sign`` extra) lets any third party verify the witness
   with only the public key — no shared secret. Seals live in a ``signatures``
   list, so HMAC and Ed25519 can coexist. Key management and rotation:
-  ``docs/trace-signing.md``.
+  ``docs/trace-signing.md``. An opt-in ``--trace-stream`` sink appends each
+  event to a JSONL file as it is recorded (flushed per event, fail-closed), so
+  a hard crash leaves a chain-verifiable *prefix* — the chain makes even a
+  truncated stream provably correct up to truncation.
 
 ### Embedding (`api.py`)
 

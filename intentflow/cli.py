@@ -25,7 +25,7 @@ from pathlib import Path
 
 from intentflow._version import __version__
 from intentflow.analyzer import analyze_program, errors_in, warnings_in
-from intentflow.auditor import audit_document
+from intentflow.auditor import audit_document, verify_trace_stream
 from intentflow.backends import BACKENDS, make_backend
 from intentflow.compiler import (
     CompileError,
@@ -299,62 +299,74 @@ def cmd_run(args: argparse.Namespace) -> int:
     approver = _build_approver(args)
     printer = print if args.verbose else None
 
-    if args.pipeline:
-        document = _compile_or_fail(program)
-        names = [p["name"] for p in document["pipelines"]]
-        if args.pipeline not in names:
-            print(
-                f"error: pipeline {args.pipeline!r} not found; available: {names}",
-                file=sys.stderr,
-            )
-            return 1
-        results = [
-            run_pipeline(
-                document,
-                args.pipeline,
-                backend=backend,
-                printer=printer,
-                workspace=args.workspace,
-                approver=approver,
-                judge=judge,
-                **seal_kwargs,
-            )
-        ]
-    elif args.goal:
-        document = _compile_or_fail(program)
-        results = [
-            execute_program(
-                program,
-                args.goal,
-                backend=backend,
-                printer=printer,
-                workspace=args.workspace,
-                approver=approver,
-                judge=judge,
-                **seal_kwargs,
-            )
-        ]
-    else:
-        # Compile up front for the trace artifact, but let execute_program own
-        # the analyze/compile phases so failed_validation is a *status*.
-        diagnostics = analyze_program(program)
-        document = compile_program(program) if not errors_in(diagnostics) else {}
-        results = [
-            execute_program(
-                program,
-                goal.name,
-                backend=backend,
-                printer=printer,
-                workspace=args.workspace,
-                approver=approver,
-                judge=judge,
-                **seal_kwargs,
-            )
-            for goal in program.goals
-        ]
-        # Deduplicate: a failed_validation result is identical per goal.
-        if results and results[0]["status"] == "failed_validation":
-            results = results[:1]
+    # An opt-in JSONL sink streams each event to disk as it is recorded, so a
+    # hard crash still leaves a chain-verifiable prefix. Opened here and closed
+    # in the finally so a fail-closed TraceSinkError still releases the file.
+    stream = open(args.trace_stream, "w", encoding="utf-8") if args.trace_stream else None
+    if stream is not None:
+        seal_kwargs["trace_sink"] = stream
+    try:
+        if args.pipeline:
+            document = _compile_or_fail(program)
+            names = [p["name"] for p in document["pipelines"]]
+            if args.pipeline not in names:
+                print(
+                    f"error: pipeline {args.pipeline!r} not found; available: {names}",
+                    file=sys.stderr,
+                )
+                return 1
+            results = [
+                run_pipeline(
+                    document,
+                    args.pipeline,
+                    backend=backend,
+                    printer=printer,
+                    workspace=args.workspace,
+                    approver=approver,
+                    judge=judge,
+                    **seal_kwargs,
+                )
+            ]
+        elif args.goal:
+            document = _compile_or_fail(program)
+            results = [
+                execute_program(
+                    program,
+                    args.goal,
+                    backend=backend,
+                    printer=printer,
+                    workspace=args.workspace,
+                    approver=approver,
+                    judge=judge,
+                    **seal_kwargs,
+                )
+            ]
+        else:
+            # Compile up front for the trace artifact, but let execute_program own
+            # the analyze/compile phases so failed_validation is a *status*.
+            diagnostics = analyze_program(program)
+            document = compile_program(program) if not errors_in(diagnostics) else {}
+            results = [
+                execute_program(
+                    program,
+                    goal.name,
+                    backend=backend,
+                    printer=printer,
+                    workspace=args.workspace,
+                    approver=approver,
+                    judge=judge,
+                    **seal_kwargs,
+                )
+                for goal in program.goals
+            ]
+            # Deduplicate: a failed_validation result is identical per goal.
+            if results and results[0]["status"] == "failed_validation":
+                results = results[:1]
+    finally:
+        if stream is not None:
+            stream.close()
+    if args.trace_stream:
+        print(f"\ntrace streamed to {args.trace_stream}")
 
     if args.json:
         payload = results[0] if len(results) == 1 else results
@@ -588,14 +600,60 @@ def cmd_replay(args: argparse.Namespace) -> int:
     return 0
 
 
-def cmd_audit(args: argparse.Namespace) -> int:
-    program = _load(args.file)
-    document = _compile_or_fail(program)
+def _is_trace_stream(text: str) -> bool:
+    """Distinguish a JSONL trace stream (issue #82) from a witness envelope.
+
+    An envelope (or any run result) is a single JSON value; a stream is one JSON
+    object per line. If the whole text is not a single JSON value, or the single
+    value looks like a lone trace event (has ``seq``/``hash``, not an
+    ``artifact`` marker), treat it as a stream."""
     try:
-        envelope = json.loads(Path(args.result).read_text(encoding="utf-8"))
+        value = json.loads(text)
+    except json.JSONDecodeError:
+        return bool(text.strip())  # multi-line JSONL → not a single JSON value
+    return (
+        isinstance(value, dict)
+        and "seq" in value
+        and "hash" in value
+        and "artifact" not in value
+    )
+
+
+def _audit_stream(path: str) -> int:
+    """Chain-verify a streamed JSONL trace and report complete vs prefix."""
+    text = Path(path).read_text(encoding="utf-8")
+    try:
+        report = verify_trace_stream(text)
+    except json.JSONDecodeError as exc:
+        print(f"error: trace stream is not valid JSONL: {exc}", file=sys.stderr)
+        return 2
+    print(json.dumps(report, indent=2))
+    if not report["chain_ok"]:
+        print("STREAM: BROKEN — the trace chain does not verify", file=sys.stderr)
+        return 1
+    if report["complete"]:
+        print(f"STREAM: COMPLETE — {report['events']} event(s), chain verified")
+    else:
+        print(
+            f"STREAM: VALID PREFIX — {report['events']} event(s) verified, "
+            "run incomplete (no run_completed event)"
+        )
+    return 0
+
+
+def cmd_audit(args: argparse.Namespace) -> int:
+    try:
+        text = Path(args.result).read_text(encoding="utf-8")
     except FileNotFoundError:
         print(f"error: result file not found: {args.result}", file=sys.stderr)
         return 2
+    # A streamed JSONL trace is chain-verified on its own (plan-independent).
+    if _is_trace_stream(text):
+        return _audit_stream(args.result)
+    program = _load(args.file)
+    document = _compile_or_fail(program)
+    try:
+        envelope = json.loads(text)
     except json.JSONDecodeError as exc:
         print(f"error: result file is not valid JSON: {exc}", file=sys.stderr)
         return 2
@@ -717,7 +775,12 @@ def build_parser() -> argparse.ArgumentParser:
         help="write a timestamped, self-contained trace artifact per run to this dir",
     )
     p_run.add_argument(
-        "--trace-out", help="write the full result (with trace) to a JSON file"
+        "--trace-out", help="write the full witness envelope (with trace) to a JSON file"
+    )
+    p_run.add_argument(
+        "--trace-stream",
+        help="append each trace event to this JSONL file as it is recorded "
+        "(crash-safe prefix; verify with 'intentflow audit --stream')",
     )
     p_run.add_argument(
         "--json", action="store_true", help="print the full result as JSON"

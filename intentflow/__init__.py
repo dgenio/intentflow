@@ -48,7 +48,7 @@ from intentflow.compiler import (
     compile_program,
     inspect_program,
 )
-from intentflow.auditor import audit_document, audit_result
+from intentflow.auditor import audit_document, audit_result, verify_trace_stream
 from intentflow.backends import (
     AnthropicCognition,
     BackendError,
@@ -113,6 +113,7 @@ __all__ = [
     "link_hash",
     "sign_root",
     "verify_root",
+    "verify_trace_stream",
     "ActionDenied",
     "ActionGate",
     "ActionPolicy",

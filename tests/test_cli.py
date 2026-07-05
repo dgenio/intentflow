@@ -424,3 +424,29 @@ def test_cli_ed25519_sign_and_audit_with_public_key(tmp_path, monkeypatch) -> No
     monkeypatch.delenv("IFLOW_TRACE_KEY_ID", raising=False)
     monkeypatch.setenv("IFLOW_TRACE_PUBLIC_KEY", str(pub_path))
     assert main(["audit", TRIAGE, str(out)]) == 0
+
+
+# -- streamed trace (issue #82) ------------------------------------------------
+
+
+def test_cli_trace_stream_writes_jsonl_and_audits_complete(tmp_path, capsys) -> None:
+    stream = tmp_path / "trace.jsonl"
+    assert main(["run", TRIAGE, "--simulate", "--trace-stream", str(stream)]) == 0
+    lines = [ln for ln in stream.read_text().splitlines() if ln.strip()]
+    assert len(lines) > 1
+    assert all(json.loads(ln)["hash"] for ln in lines)
+    # audit auto-detects the JSONL stream and reports a complete, verified chain.
+    capsys.readouterr()
+    assert main(["audit", TRIAGE, str(stream)]) == 0
+    assert "STREAM: COMPLETE" in capsys.readouterr().out
+
+
+def test_cli_audit_detects_truncated_stream_as_prefix(tmp_path, capsys) -> None:
+    stream = tmp_path / "trace.jsonl"
+    main(["run", TRIAGE, "--simulate", "--trace-stream", str(stream)])
+    lines = [ln for ln in stream.read_text().splitlines() if ln.strip()]
+    truncated = tmp_path / "partial.jsonl"
+    truncated.write_text("\n".join(lines[:4]) + "\n")
+    capsys.readouterr()
+    assert main(["audit", TRIAGE, str(truncated)]) == 0
+    assert "VALID PREFIX" in capsys.readouterr().out
