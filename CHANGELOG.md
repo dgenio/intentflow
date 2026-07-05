@@ -24,12 +24,20 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - Trace event names are now defined once as `trace.Event` constants and shared
   by the runtime, the action gate, and the auditor (previously duplicated string
   literals across three modules). Hash output is unchanged.
+- **`trace_id` derivation**: now `sha256(plan_digest + trace_chain_root)` instead
+  of re-serializing the whole `{plan, trace}` document. The chain root already
+  commits to every trace event, so the id no longer scales with trace length
+  (3.8–5.9× faster on the benchmark). Determinism and audit semantics are
+  unchanged; the id values themselves differ from prior releases.
 
 ### Documented
 - `docs/adr/0001-canonical-json-hashing.md`: adopts RFC 8785 (JCS) as the target
   canonical form for the (now enforced) JSON-native hashed domain, and defers
   the byte-format migration to a version-gated follow-up. Hash bytes are
   unchanged in this release.
+- `docs/trace-scaling-investigation.md` + `scripts/bench_trace.py`: measured
+  trace memory (~1.6 KB/event, linear) and trace-id hashing cost, motivating the
+  chain-root `trace_id` derivation and the streaming sink.
 
 ## [0.6.0] - 2026-06-14
 

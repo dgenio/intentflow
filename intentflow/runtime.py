@@ -737,7 +737,8 @@ class GoalRuntime:
         self._phase_done("trace")
 
         trace_events = self.trace.to_list()
-        summary = self._summarize(status, verification, trace_events)
+        chain = self.trace.seal()
+        summary = self._summarize(status, verification, trace_events, chain["root"])
         self._say(f"\nrun status: {status}")
         return {
             "goal": self.plan["goal"],
@@ -766,7 +767,7 @@ class GoalRuntime:
             "summary": summary,
             "trace_id": summary["trace_id"],
             "trace": trace_events,
-            "trace_chain": self.trace.seal(),
+            "trace_chain": chain,
         }
 
     def _summarize(
@@ -774,11 +775,18 @@ class GoalRuntime:
         status: str,
         verification: dict[str, Any],
         trace_events: list[dict[str, Any]],
+        chain_root: str,
     ) -> dict[str, Any]:
         """A flat, human-first summary of the run. ``trace_id`` is a
-        deterministic hash of the plan and trace so identical runs produce
-        identical ids (the wall-clock timestamp lives only in the saved trace
-        artifact)."""
+        deterministic hash of the plan digest and the trace chain root, so
+        identical runs produce identical ids (the wall-clock timestamp lives
+        only in the saved trace artifact).
+
+        The chain root already commits — incrementally, one link per event — to
+        every trace event, so deriving the id from it avoids re-serializing the
+        entire trace here (see issue #47 / ``docs/trace-scaling-investigation.md``).
+        The plan digest keeps the id sensitive to the compiled plan; it is
+        bounded by plan size, not trace length."""
         requested = [
             e["detail"]["action"] for e in trace_events if e["event"] == Event.TOOL_INVOKED
         ]
@@ -787,12 +795,11 @@ class GoalRuntime:
             for e in trace_events
             if e["event"] in (Event.ACTION_BLOCKED, Event.APPROVAL_DENIED)
         ]
+        plan_digest = hashlib.sha256(
+            json.dumps(self.plan, sort_keys=True, default=str).encode("utf-8")
+        ).hexdigest()
         digest = hashlib.sha256(
-            json.dumps(
-                {"plan": self.plan, "trace": trace_events},
-                sort_keys=True,
-                default=str,
-            ).encode("utf-8")
+            f"{plan_digest}{chain_root}".encode("utf-8")
         ).hexdigest()[:16]
         return {
             "trace_id": digest,
