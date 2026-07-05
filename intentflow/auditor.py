@@ -20,6 +20,13 @@ that the agent stayed inside its envelope:
   verification or a human escalation cannot be reported as ``completed``);
 * ``O1`` — the produced outputs match the declared output schema.
 
+Two structural, plan-level codes cover inputs the auditor cannot verify:
+
+* ``P1`` — no plan exists for the goal/stage named in the result;
+* ``P2`` — the plan or result declares a format version this auditor does not
+  support, so a conformance verdict would be unreliable (see
+  ``docs/formats.md`` for the versioning policy).
+
 Because the auditor needs only the plan (recompiled from source) and the
 result JSON, a third party can verify conformance without trusting the
 runtime, the backend, or the model.
@@ -32,7 +39,23 @@ import hmac
 from dataclasses import dataclass
 from typing import Any
 
-from intentflow.trace import CANONICAL_PHASES, GENESIS_HASH, Event, link_hash
+from intentflow.compiler import PLAN_FORMAT_VERSION
+from intentflow.trace import (
+    TRACE_FORMAT_VERSION,
+    CANONICAL_PHASES,
+    GENESIS_HASH,
+    Event,
+    link_hash,
+)
+
+#: Plan format versions this auditor can verify. Pre-1.0 the policy is
+#: exact-match: a minor bump may change plan semantics, so an out-of-range plan
+#: is reported (P2) rather than audited on optimistic assumptions.
+SUPPORTED_PLAN_FORMATS = frozenset({PLAN_FORMAT_VERSION})
+
+#: Result/trace (witness) format versions this auditor can verify. Same
+#: exact-match policy as plans, tracked independently.
+SUPPORTED_TRACE_FORMATS = frozenset({TRACE_FORMAT_VERSION})
 
 #: Statuses for which the run reached verification/uncertainty phases.
 _EXECUTED_STATUSES = ("completed", "needs_human", "blocked", "failed_verification")
@@ -285,10 +308,52 @@ def _check_output_contract(plan: dict[str, Any], result: dict[str, Any]) -> list
     return violations
 
 
+def _check_format_versions(
+    plan: dict[str, Any], result: dict[str, Any]
+) -> list[Violation]:
+    """Verify the plan and result declare format versions this auditor supports.
+
+    A conformance verdict is only meaningful if the auditor understands the
+    shapes it is checking. An out-of-range version is reported as ``P2`` rather
+    than audited on optimistic assumptions about a format this build predates or
+    postdates. See ``docs/formats.md`` for the versioning policy."""
+    violations: list[Violation] = []
+    plan_version = plan.get("format_version")
+    if plan_version not in SUPPORTED_PLAN_FORMATS:
+        violations.append(
+            Violation(
+                "P2",
+                f"plan format version {plan_version!r} is not supported by this "
+                f"auditor (supports {sorted(SUPPORTED_PLAN_FORMATS)}); "
+                "re-compile with a matching IntentFlow or consult docs/formats.md",
+            )
+        )
+    trace_version = result.get("format_version")
+    if trace_version not in SUPPORTED_TRACE_FORMATS:
+        violations.append(
+            Violation(
+                "P2",
+                f"result/trace format version {trace_version!r} is not supported "
+                f"by this auditor (supports {sorted(SUPPORTED_TRACE_FORMATS)}); "
+                "re-run with a matching IntentFlow or consult docs/formats.md",
+            )
+        )
+    return violations
+
+
 def audit_result(
     plan: dict[str, Any], result: dict[str, Any], sign_key: bytes | None = None
 ) -> dict[str, Any]:
     """Audit one goal result against its compiled plan."""
+    # Version compatibility gates everything else: if the auditor does not
+    # understand the plan/result shape, no downstream check is trustworthy.
+    version_violations = _check_format_versions(plan, result)
+    if version_violations:
+        return {
+            "goal": plan["goal"],
+            "conformant": False,
+            "violations": [{"code": v.code, "message": v.message} for v in version_violations],
+        }
     status = result.get("status")
     if status == "failed_validation":
         return {

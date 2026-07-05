@@ -49,7 +49,7 @@ from intentflow.backends import (
 )
 from intentflow.judges import Judge
 from intentflow.tools import ActionDenied, ActionGate, Approver, ToolError, ToolRegistry
-from intentflow.trace import Event, Trace
+from intentflow.trace import TRACE_FORMAT_VERSION, Event, Trace
 
 #: Statuses a run can end in.
 RUN_STATUSES: tuple[str, ...] = (
@@ -741,6 +741,7 @@ class GoalRuntime:
         summary = self._summarize(status, verification, trace_events, chain["root"])
         self._say(f"\nrun status: {status}")
         return {
+            "format_version": TRACE_FORMAT_VERSION,
             "goal": self.plan["goal"],
             "backend": self.backend.name,
             "model": self.response.model if self.response else None,
@@ -885,6 +886,7 @@ def _validation_failure(
 ) -> dict[str, Any]:
     goal_name = program.goals[0].name if program.goals else None
     return {
+        "format_version": TRACE_FORMAT_VERSION,
         "goal": goal_name,
         "backend": None,
         "model": None,

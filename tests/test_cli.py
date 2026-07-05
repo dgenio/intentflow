@@ -77,7 +77,7 @@ def test_compile_prints_json(capsys) -> None:
     assert main(["compile", TRIAGE]) == 0
     document = json.loads(capsys.readouterr().out)
     assert document["goals"][0]["goal"] == "TriageGitHubIssue"
-    assert document["plan_version"] == "0.2"
+    assert document["format_version"] == "0.2"
     assert document["source_hash"]
 
 

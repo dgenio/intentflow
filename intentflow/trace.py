@@ -28,6 +28,14 @@ import hmac
 import json
 from typing import Any
 
+#: Version of the *result/trace (witness) format* — the shape of the run-result
+#: envelope a run emits and the auditor consumes. Independent of the plan format
+#: version (``compiler.PLAN_FORMAT_VERSION``) and of the package version. Bumped
+#: when the witness shape changes in a way an auditor must react to; the
+#: auditor's ``SUPPORTED_TRACE_FORMATS`` declares which values it can verify.
+#: See ``docs/formats.md``.
+TRACE_FORMAT_VERSION = "0.1"
+
 #: The phase order every conformant run must follow (embedded in each plan as
 #: ``execution_phases`` and checked by the auditor as T2). The compiler
 #: re-exports this as ``EXECUTION_PHASES`` for plan emission.

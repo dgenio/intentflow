@@ -19,6 +19,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   `detail` that is not composed of JSON-native types, enforced in `Trace.record`
   so the canonical hash form can never silently depend on CPython's `str()`
   coercion. Documented in `docs/adr/0001-canonical-json-hashing.md`.
+- **Format-version compatibility**: the auditor now verifies the plan and
+  result declare a `format_version` it supports (`auditor.SUPPORTED_PLAN_FORMATS`
+  / `SUPPORTED_TRACE_FORMATS`), emitting a `P2` violation on a mismatch instead
+  of auditing an unknown shape. Run results carry a `format_version`
+  (`trace.TRACE_FORMAT_VERSION`). Policy documented in `docs/formats.md`.
 
 ### Changed
 - Trace event names are now defined once as `trace.Event` constants and shared
@@ -29,6 +34,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   commits to every trace event, so the id no longer scales with trace length
   (3.8–5.9× faster on the benchmark). Determinism and audit semantics are
   unchanged; the id values themselves differ from prior releases.
+- **Breaking (plan shape)**: the plan/document version field is renamed
+  `plan_version` → `format_version` (constant `PLAN_VERSION` → `PLAN_FORMAT_VERSION`)
+  so both contract artifacts use one uniform, independently-versioned field name.
 
 ### Documented
 - `docs/adr/0001-canonical-json-hashing.md`: adopts RFC 8785 (JCS) as the target
