@@ -30,6 +30,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import time
 from dataclasses import asdict, dataclass
 from pathlib import Path
@@ -71,13 +72,19 @@ class BackendError(RuntimeError):
     """A backend failed to produce a response (network, provider, etc.)."""
 
 
+#: A whole reply wrapped in a single ```` ``` ```` / ```` ```json ```` fence.
+#: Matched (not character-stripped) so backticks *inside* the content survive.
+_CODE_FENCE_RE = re.compile(
+    r"\A```(?:json)?\s*\n?(.*?)\n?```\Z",
+    re.DOTALL | re.IGNORECASE,
+)
+
+
 def strip_code_fences(text: str) -> str:
     text = text.strip()
-    if text.startswith("```"):
-        text = text.strip("`")
-        if text.lower().startswith("json"):
-            text = text[len("json"):]
-        text = text.strip()
+    match = _CODE_FENCE_RE.match(text)
+    if match:
+        return match.group(1).strip()
     return text
 
 

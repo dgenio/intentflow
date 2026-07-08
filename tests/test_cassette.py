@@ -188,6 +188,24 @@ def test_make_judge_replay_reads_a_recorded_judge_cassette(tmp_path) -> None:
     assert replayed.passed is False
 
 
+def test_api_threads_run_cassette_to_the_judge(tmp_path) -> None:
+    # Regression: IntentFlowProgram.run must thread its `cassette` to the judge,
+    # exactly as it does for the backend, so a run is replayable (cognition +
+    # verdicts). Before the fix `_judge` dropped the cassette, so `judge="replay"`
+    # raised "the 'replay' judge requires a cassette path" even when one was
+    # supplied. Now the cassette reaches the replay judge: with no recorded
+    # verdict it misses on the rule (fail-closed BackendError) instead.
+    from intentflow.api import IntentFlowProgram
+    from intentflow.backends import BackendError
+
+    cpath = tmp_path / "empty-judge.cassette.json"
+    Cassette(cpath).save()  # a real cassette, but without this run's verdict
+    program = IntentFlowProgram(parse_source(_JUDGED_SRC))
+
+    with pytest.raises(BackendError, match="no recorded judge reply"):
+        program.run(backend="simulate", judge="replay", cassette=cpath)
+
+
 def test_recording_backend_propagates_usage_metadata(tmp_path) -> None:
     cpath = tmp_path / "c.json"
     doc = _doc()

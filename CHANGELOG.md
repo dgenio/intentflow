@@ -24,8 +24,18 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 ### Changed
 - `try_parse_json` now recovers a balanced JSON object embedded in surrounding
   prose, reducing spurious parse failures on real model replies. (#35)
+- Code-fence stripping matches a whole ` ```json ` fence with a regex instead of
+  character-stripping backticks, so backticks inside the reply survive. (#35)
 - The LLM judge fails **closed** on an unparseable reply (records a failing
   verdict instead of raising), and retries transient chat failures. (#35, #73)
+
+### Fixed
+- The embedding API (`IntentFlowProgram.run`/`run_pipeline`) now threads its
+  `cassette` argument to the judge as it already does for the backend, so a
+  `replay` judge reads recorded verdicts and a real judge records them — an
+  API-driven run is fully replayable. Previously the cassette was dropped, so
+  `judge="replay"` raised "requires a cassette path" and recording judges never
+  captured their verdicts. (#75)
 
 ## [0.6.0] - 2026-06-14
 

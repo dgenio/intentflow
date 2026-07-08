@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import json
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any, Callable, Protocol
 
 from intentflow.backends import try_parse_json
@@ -123,7 +124,7 @@ class LLMJudge:
         )
 
 
-def make_judge(name: str, cassette: str | None = None) -> Judge:
+def make_judge(name: str, cassette: str | Path | None = None) -> Judge:
     """Build a judge by CLI name. Real judges reuse the backend providers and
     raise a clear error if their dependency or credentials are missing.
 

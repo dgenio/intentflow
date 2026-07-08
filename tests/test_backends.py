@@ -197,6 +197,13 @@ def test_try_parse_json_returns_none_for_unrecoverable_text() -> None:
     assert try_parse_json("{unterminated") is None
 
 
+def test_try_parse_json_preserves_interior_backticks_in_fenced_reply() -> None:
+    # The fence is matched as a whole, not character-stripped, so backticks
+    # inside the JSON content survive (regression for the fragile strip("`")).
+    reply = '```json\n{"note": "wrap in `code` ticks"}\n```'
+    assert try_parse_json(reply) == {"note": "wrap in `code` ticks"}
+
+
 # -- real backends via injected fake clients (assemble -> call -> parse) -----
 
 
