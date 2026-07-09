@@ -115,7 +115,7 @@ class IntentFlowProgram:
             printer=printer,
             workspace=None if registry is not None else workspace,
             approver=self._approver(approve, approver),
-            judge=self._judge(judge),
+            judge=self._judge(judge, cassette),
             registry=registry,
             sign_key=sign_key,
         )
@@ -142,7 +142,7 @@ class IntentFlowProgram:
             backend=self._backend(backend, cassette),
             printer=printer,
             workspace=None if registry is not None else workspace,
-            judge=self._judge(judge),
+            judge=self._judge(judge, cassette),
             approver=self._approver(approve, approver),
             registry=registry,
             sign_key=sign_key,
@@ -159,10 +159,15 @@ class IntentFlowProgram:
         return backend
 
     @staticmethod
-    def _judge(judge: str | Judge | None) -> Judge | None:
+    def _judge(
+        judge: str | Judge | None, cassette: str | Path | None = None
+    ) -> Judge | None:
         if judge is None or not isinstance(judge, str):
             return judge
-        return make_judge(judge)
+        # Thread the run's cassette to the judge, exactly as ``_backend`` does:
+        # a ``replay`` judge reads verdicts from it, a real judge records to it,
+        # so an API-driven run is fully replayable (cognition + verdicts).
+        return make_judge(judge, cassette)
 
     @staticmethod
     def _approver(

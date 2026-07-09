@@ -11,8 +11,11 @@ import json
 import pytest
 
 from intentflow.backends import (
+    AnthropicCognition,
+    BackendError,
     BackendResponse,
     MockBackend,
+    OpenAICompatibleCognition,
     SimulatedCognition,
     SimulatorBackend,
     assemble_messages,
@@ -21,6 +24,51 @@ from intentflow.backends import (
 )
 from intentflow.compiler import compile_goal
 from intentflow.parser import parse_file
+from intentflow.reliability import HTTPTimeout, RetryPolicy
+
+
+class _Namespace:
+    """A tiny attribute bag, standing in for an SDK response object."""
+
+    def __init__(self, **kw) -> None:
+        self.__dict__.update(kw)
+
+
+class _FakeAnthropicClient:
+    """Captures create() kwargs and returns an anthropic-shaped response."""
+
+    def __init__(self, text: str = '{"output": {}, "confidence": 0.5}') -> None:
+        self._text = text
+        self.calls: list[dict] = []
+        self.messages = self
+
+    def create(self, **kwargs):
+        self.calls.append(kwargs)
+        return _Namespace(
+            content=[_Namespace(type="text", text=self._text)],
+            usage=_Namespace(input_tokens=11, output_tokens=7),
+            stop_reason="end_turn",
+        )
+
+
+class _FakeOpenAIClient:
+    """Captures create() kwargs and returns an openai-shaped response."""
+
+    def __init__(self, text: str = '{"output": {}, "confidence": 0.5}') -> None:
+        self._text = text
+        self.calls: list[dict] = []
+        self.chat = _Namespace(completions=self)
+
+    def create(self, **kwargs):
+        self.calls.append(kwargs)
+        return _Namespace(
+            choices=[
+                _Namespace(
+                    message=_Namespace(content=self._text), finish_reason="stop"
+                )
+            ],
+            usage=_Namespace(prompt_tokens=11, completion_tokens=7),
+        )
 
 
 def _triage_plan() -> dict:
@@ -132,3 +180,116 @@ def test_try_parse_json_strips_code_fences() -> None:
 def test_try_parse_json_strips_uppercase_json_fence() -> None:
     assert try_parse_json('```JSON\n{"a": 1}\n```') == {"a": 1}
     assert try_parse_json('```Json\n{"a": 1}\n```') == {"a": 1}
+
+
+def test_try_parse_json_recovers_object_wrapped_in_prose() -> None:
+    reply = 'Sure! Here is the result:\n{"a": 1, "b": [2, 3]}\nHope that helps.'
+    assert try_parse_json(reply) == {"a": 1, "b": [2, 3]}
+
+
+def test_try_parse_json_handles_nested_braces_and_strings() -> None:
+    reply = 'noise {"outer": {"inner": "a } brace in a string"}} trailing'
+    assert try_parse_json(reply) == {"outer": {"inner": "a } brace in a string"}}
+
+
+def test_try_parse_json_returns_none_for_unrecoverable_text() -> None:
+    assert try_parse_json("no json here at all") is None
+    assert try_parse_json("{unterminated") is None
+
+
+def test_try_parse_json_preserves_interior_backticks_in_fenced_reply() -> None:
+    # The fence is matched as a whole, not character-stripped, so backticks
+    # inside the JSON content survive (regression for the fragile strip("`")).
+    reply = '```json\n{"note": "wrap in `code` ticks"}\n```'
+    assert try_parse_json(reply) == {"note": "wrap in `code` ticks"}
+
+
+# -- real backends via injected fake clients (assemble -> call -> parse) -----
+
+
+def test_anthropic_backend_assembles_calls_and_parses() -> None:
+    plan = _triage_plan()
+    system, user = assemble_messages(plan, EVIDENCE)
+    client = _FakeAnthropicClient('{"output": {"summary": "s"}, "confidence": 0.6}')
+    backend = AnthropicCognition(client=client, timeout=HTTPTimeout(read=20.0))
+
+    response = backend.respond(plan, EVIDENCE, system, user)
+
+    assert client.calls[0]["system"] == system
+    assert client.calls[0]["messages"] == [{"role": "user", "content": user}]
+    assert client.calls[0]["timeout"] == HTTPTimeout(read=20.0).as_sdk()
+    assert response.parsed == {"output": {"summary": "s"}, "confidence": 0.6}
+    assert response.usage == {"input_tokens": 11, "output_tokens": 7}
+    assert response.finish_reason == "end_turn"
+    assert response.model == "claude-sonnet-4-6"
+
+
+def test_openai_backend_assembles_calls_and_parses() -> None:
+    plan = _triage_plan()
+    system, user = assemble_messages(plan, EVIDENCE)
+    client = _FakeOpenAIClient('{"output": {"summary": "s"}, "confidence": 0.6}')
+    backend = OpenAICompatibleCognition(
+        model="local-model", client=client, timeout=HTTPTimeout(read=20.0)
+    )
+
+    response = backend.respond(plan, EVIDENCE, system, user)
+
+    sent = client.calls[0]
+    assert sent["model"] == "local-model"
+    assert sent["messages"][0] == {"role": "system", "content": system}
+    assert sent["timeout"] == HTTPTimeout(read=20.0).as_sdk()
+    assert response.parsed == {"output": {"summary": "s"}, "confidence": 0.6}
+    assert response.usage == {"input_tokens": 11, "output_tokens": 7}
+    assert response.finish_reason == "stop"
+
+
+def test_openai_backend_retries_without_response_format_when_rejected() -> None:
+    plan = _triage_plan()
+    system, user = assemble_messages(plan, EVIDENCE)
+
+    class _PickyClient(_FakeOpenAIClient):
+        def create(self, **kwargs):
+            if "response_format" in kwargs:
+                raise ValueError("response_format unsupported")
+            return super().create(**kwargs)
+
+    client = _PickyClient()
+    backend = OpenAICompatibleCognition(client=client)
+    response = backend.respond(plan, EVIDENCE, system, user)
+    assert response.parsed is not None
+    assert len(client.calls) == 1  # only the fallback call was recorded
+
+
+def test_chat_backend_retries_transient_failures_then_succeeds() -> None:
+    plan = _triage_plan()
+    system, user = assemble_messages(plan, EVIDENCE)
+
+    class _FlakyOnce(_FakeAnthropicClient):
+        def __init__(self) -> None:
+            super().__init__()
+            self._raised = False
+
+        def create(self, **kwargs):
+            if not self._raised:
+                self._raised = True
+                raise ConnectionError("reset by peer")
+            return super().create(**kwargs)
+
+    policy = RetryPolicy(max_attempts=3, sleep=lambda _: None)
+    backend = AnthropicCognition(client=_FlakyOnce(), retry_policy=policy)
+    response = backend.respond(plan, EVIDENCE, system, user)
+    assert response.parsed is not None
+
+
+def test_chat_backend_fails_closed_after_exhausting_retries() -> None:
+    plan = _triage_plan()
+    system, user = assemble_messages(plan, EVIDENCE)
+
+    class _Down(_FakeAnthropicClient):
+        def create(self, **kwargs):
+            raise ConnectionError("provider down")
+
+    policy = RetryPolicy(max_attempts=2, sleep=lambda _: None)
+    backend = AnthropicCognition(client=_Down(), retry_policy=policy)
+    with pytest.raises(BackendError, match="failed after 2 attempt"):
+        backend.respond(plan, EVIDENCE, system, user)

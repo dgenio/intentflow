@@ -8,6 +8,7 @@ import pytest
 from intentflow.compiler import compile_goal
 from intentflow.judges import JudgeVerdict, LLMJudge, SimulatedJudge, make_judge
 from intentflow.parser import parse_source
+from intentflow.reliability import RetryPolicy
 from intentflow.runtime import GoalRuntime
 
 JUDGED_SRC = (
@@ -48,6 +49,37 @@ def test_llm_judge_parses_fenced_json() -> None:
 
     verdict = LLMJudge(fake_chat).judge("be nice", {})
     assert verdict == JudgeVerdict(False, "tone is off")
+
+
+def test_llm_judge_recovers_verdict_wrapped_in_prose() -> None:
+    def fake_chat(system: str, user: str) -> str:
+        return 'My verdict: {"passed": true, "rationale": "ok"} — done.'
+
+    assert LLMJudge(fake_chat).judge("be nice", {}) == JudgeVerdict(True, "ok")
+
+
+def test_llm_judge_fails_closed_on_unparseable_reply() -> None:
+    def fake_chat(system: str, user: str) -> str:
+        return "I cannot produce JSON right now, sorry."
+
+    verdict = LLMJudge(fake_chat).judge("be nice", {})
+    assert verdict.passed is False
+    assert "not valid JSON" in verdict.rationale
+
+
+def test_llm_judge_retries_transient_chat_failures() -> None:
+    calls = {"n": 0}
+
+    def flaky_chat(system: str, user: str) -> str:
+        calls["n"] += 1
+        if calls["n"] == 1:
+            raise ConnectionError("reset")
+        return '{"passed": true, "rationale": "ok"}'
+
+    policy = RetryPolicy(max_attempts=3, sleep=lambda _: None)
+    verdict = LLMJudge(flaky_chat, retry_policy=policy).judge("r", {})
+    assert verdict == JudgeVerdict(True, "ok")
+    assert calls["n"] == 2
 
 
 def test_without_judge_judged_rules_are_skipped_not_passed() -> None:
@@ -91,9 +123,23 @@ def test_verification_keeps_machine_and_judged_tiers_separate() -> None:
     assert tiers["judged"]["passed"] == 1
 
 
+def test_malformed_judge_reply_fails_verification_without_crashing() -> None:
+    # A judge whose reply cannot be parsed must fail the rule closed, and the
+    # run must complete with a failed_verification status — never an exception.
+    result = _run(judge=LLMJudge(lambda system, user: "not json"))
+    check = _judged_check(result)
+    assert check["status"] == "fail"
+    assert result["status"] == "failed_verification"
+
+
 def test_make_judge_unknown_name_errors() -> None:
     with pytest.raises(ValueError, match="unknown judge"):
         make_judge("oracle")
+
+
+def test_make_judge_replay_requires_cassette() -> None:
+    with pytest.raises(ValueError, match="requires a cassette"):
+        make_judge("replay")
 
 
 def test_judged_verdict_is_recorded_in_trace() -> None:

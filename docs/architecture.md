@@ -91,8 +91,22 @@ mock backend for tests, a real Claude backend, an OpenAI-compatible backend
 (OpenAI, Azure, or local servers such as vLLM/Ollama via
 `OPENAI_BASE_URL`), and cassette replay. All assemble the same staged
 prompt plan and parse the same strict-JSON reply, so adding a provider is
-one class and none can opt out of governance. Governance is **not**
-pluggable. It lives outside the backend:
+one class and none can opt out of governance.
+
+The one place a run leaves the deterministic core is the network call to a
+real model or judge, so that is the one place with explicit reliability
+controls (`reliability.py`): every real request carries an `HTTPTimeout`
+(connect/read), and a bounded `RetryPolicy` wraps the call with deterministic
+exponential backoff. Retries are **fail-closed** — on exhaustion the call
+raises `BackendError` and the run ends in `backend_error`, never a partial
+success. Both backends and the LLM judge share this policy; the provider SDKs'
+own retry loops are disabled so IntentFlow owns the behavior. All knobs are
+environment variables (`INTENTFLOW_HTTP_TIMEOUT`, `INTENTFLOW_MAX_ATTEMPTS`,
+`INTENTFLOW_RETRY_BASE_DELAY`, …) with safe defaults. Parsing is defensive too:
+a JSON object embedded in prose is recovered, and a judge whose reply cannot be
+parsed fails the rule closed rather than crashing the run.
+
+Governance is **not** pluggable. It lives outside the backend:
 
 1. **The ActionGate is the enforcement point.** Every tool invocation —
    including evidence collection from a workspace — goes through the gate,
