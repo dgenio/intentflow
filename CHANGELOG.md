@@ -51,6 +51,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   (`trace.TraceSinkError`). `auditor.verify_trace_stream` and `intentflow audit`
   (auto-detecting a JSONL stream) chain-verify a stream and distinguish a
   complete run from a valid-but-truncated prefix.
+- **Signature-required audit** (`intentflow audit --require-signed`, auditor
+  `require_signed=`): rejects a witness that carries no signature verifying
+  against the supplied keys — a stripped or absent seal — as a `T3`. Closes the
+  downgrade path where a forger recomputes the bare chain and drops the seal's
+  `signatures` list; the bare chain is integrity, sealing is authenticity.
+  Opt-in, so the default (sealing is optional) is unchanged.
 - **Reliability primitives** (`intentflow/reliability.py`): `HTTPTimeout` and a
   bounded, fail-closed `RetryPolicy` with deterministic exponential backoff,
   shared by real cognition backends and the LLM judge. Configurable via

@@ -130,6 +130,7 @@ def _check_trace_chain(
     sign_key: bytes | None = None,
     keys: dict[str, bytes] | None = None,
     verifiers: "dict[str, bytes] | None" = None,
+    require_signed: bool = False,
 ) -> list[Violation]:
     """Recompute the hash chain independently and verify any seal signatures.
 
@@ -139,7 +140,15 @@ def _check_trace_chain(
     are verified with ``sign_key`` (the default, keyless case) or a named key
     from ``keys`` (selected by the entry's ``key_id``, so rotation keeps old
     witnesses verifiable); Ed25519 signatures are verified with public keys from
-    ``verifiers`` (see :mod:`intentflow.signing`)."""
+    ``verifiers`` (see :mod:`intentflow.signing`).
+
+    The bare chain proves *integrity*, not *authenticity*: a forger can edit an
+    event, recompute every downstream link, and drop the seal's ``signatures``
+    list, leaving a chain-valid but unsigned witness. By default such a witness
+    is conformant (sealing is opt-in). ``require_signed`` closes that downgrade
+    path: when set, a witness with no signature that verifies against the
+    supplied keys is a ``T3`` violation, so a stripped or absent seal is
+    detected rather than silently accepted."""
     violations: list[Violation] = []
     prev = GENESIS_HASH
     for event in trace:
@@ -172,6 +181,7 @@ def _check_trace_chain(
             violations.append(
                 Violation("T3", "sealed trace length does not match the trace")
             )
+        verified = 0
         for entry in chain.get("signatures", []):
             algo = entry.get("algo")
             if algo == "hmac-sha256":
@@ -182,6 +192,16 @@ def _check_trace_chain(
                 v = Violation("T3", f"trace has an unknown signature algorithm {algo!r}")
             if v is not None:
                 violations.append(v)
+            else:
+                verified += 1
+        if require_signed and verified == 0:
+            violations.append(
+                Violation(
+                    "T3",
+                    "trace has no signature that verifies against the supplied "
+                    "keys, but a signed witness was required",
+                )
+            )
     return violations
 
 
@@ -439,12 +459,15 @@ def audit_result(
     sign_key: bytes | None = None,
     keys: dict[str, bytes] | None = None,
     verifiers: "dict[str | None, bytes] | None" = None,
+    require_signed: bool = False,
 ) -> dict[str, Any]:
     """Audit one goal result against its compiled plan.
 
     ``sign_key`` verifies a keyless HMAC seal; ``keys`` (``{key_id: key}``)
     verifies rotated, key-id'd HMAC seals; ``verifiers`` (``{key_id: public_key}``)
-    verifies Ed25519 seals. See ``docs/trace-signing.md``."""
+    verifies Ed25519 seals. ``require_signed`` rejects a witness that carries no
+    verifying signature (a stripped or absent seal), closing the downgrade path.
+    See ``docs/trace-signing.md``."""
     # Version compatibility gates everything else: if the auditor does not
     # understand the plan/result shape, no downstream check is trustworthy.
     version_violations = _check_format_versions(plan, result)
@@ -465,7 +488,9 @@ def audit_result(
     trace = result.get("trace", [])
     violations = (
         _check_trace_integrity(trace)
-        + _check_trace_chain(trace, result.get("trace_chain"), sign_key, keys, verifiers)
+        + _check_trace_chain(
+            trace, result.get("trace_chain"), sign_key, keys, verifiers, require_signed
+        )
         + _check_action_governance(plan, trace)
         + _check_evidence_citations(result)
         + _check_status_consistency(result)
@@ -487,10 +512,12 @@ def audit_document(
     sign_key: bytes | None = None,
     keys: dict[str, bytes] | None = None,
     verifiers: "dict[str | None, bytes] | None" = None,
+    require_signed: bool = False,
 ) -> dict[str, Any]:
     """Audit a result file (single goal or pipeline) against a compiled
     document. Returns an aggregate report. ``sign_key``/``keys``/``verifiers``
-    supply the HMAC and Ed25519 keys used to verify any trace seal (see
+    supply the HMAC and Ed25519 keys used to verify any trace seal;
+    ``require_signed`` rejects a witness with no verifying signature (see
     ``audit_result``)."""
     plans = {plan["goal"]: plan for plan in document["goals"]}
     if "pipeline" in result:
@@ -511,7 +538,9 @@ def audit_document(
                     }
                 )
                 continue
-            reports.append(audit_result(plan, stage, sign_key, keys, verifiers))
+            reports.append(
+                audit_result(plan, stage, sign_key, keys, verifiers, require_signed)
+            )
         return {
             "pipeline": result["pipeline"],
             "conformant": all(r["conformant"] for r in reports),
@@ -529,4 +558,4 @@ def audit_document(
                 }
             ],
         }
-    return audit_result(plan, result, sign_key, keys, verifiers)
+    return audit_result(plan, result, sign_key, keys, verifiers, require_signed)

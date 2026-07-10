@@ -86,6 +86,41 @@ def test_unsigned_trace_needs_no_key() -> None:
     assert audit_document(document, result)["conformant"] is True
 
 
+# -- downgrade guard: require_signed (Phase 3 audit finding) -----------------
+
+
+def test_require_signed_rejects_unsigned_witness() -> None:
+    # The bare chain is integrity, not authenticity: an unsigned witness is
+    # conformant by default. require_signed makes the absent seal a violation.
+    document, result = _doc_and_result()
+    assert result["trace_chain"]["signatures"] == []
+    assert audit_document(document, result)["conformant"] is True
+    report = audit_document(document, result, require_signed=True)
+    assert report["conformant"] is False
+    assert any(v["code"] == "T3" for v in report["violations"])
+
+
+def test_require_signed_rejects_signature_stripped_witness() -> None:
+    # A forger can edit an event, recompute the chain, and drop the signatures
+    # list. Without require_signed that downgraded witness still audits clean;
+    # with it (and the verify key) the stripped seal is caught.
+    key = b"topsecret"
+    document, result = _doc_and_result(sign_key=key)
+    stripped = copy.deepcopy(result)
+    stripped["trace_chain"]["signatures"] = []
+    assert audit_document(document, stripped, sign_key=key)["conformant"] is True
+    report = audit_document(document, stripped, sign_key=key, require_signed=True)
+    assert report["conformant"] is False
+    assert any(v["code"] == "T3" for v in report["violations"])
+
+
+def test_require_signed_accepts_properly_signed_witness() -> None:
+    key = b"topsecret"
+    document, result = _doc_and_result(sign_key=key)
+    report = audit_document(document, result, sign_key=key, require_signed=True)
+    assert report["conformant"] is True
+
+
 # -- key ids and rotation (issue #80) ---------------------------------------
 
 

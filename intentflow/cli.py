@@ -676,7 +676,9 @@ def cmd_audit(args: argparse.Namespace) -> int:
     # HMAC seals, IFLOW_TRACE_PUBLIC_KEY (PEM) for Ed25519 seals.
     sign_key, keys = _verify_keys()
     verifiers = _verify_public_keys()
-    report = audit_document(document, result, sign_key, keys, verifiers)
+    report = audit_document(
+        document, result, sign_key, keys, verifiers, args.require_signed
+    )
     print(json.dumps(report, indent=2))
     if report["conformant"]:
         print("AUDIT: CONFORMANT — the trace stayed inside the program's envelope")
@@ -839,6 +841,13 @@ def build_parser() -> argparse.ArgumentParser:
     )
     p_audit.add_argument("file", help="the .iflow source (the contract)")
     p_audit.add_argument("result", help="the result JSON from 'run' (the witness)")
+    p_audit.add_argument(
+        "--require-signed",
+        action="store_true",
+        help="reject a witness with no verifying signature (guards against a "
+        "stripped or absent seal); needs a verify key set via IFLOW_TRACE_KEY, "
+        "IFLOW_TRACE_KEYS, or IFLOW_TRACE_PUBLIC_KEY",
+    )
     p_audit.set_defaults(func=cmd_audit)
     return parser
 

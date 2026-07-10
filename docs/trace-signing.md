@@ -121,3 +121,23 @@ The auditor verifies an Ed25519 seal against the **trusted** public key supplied
 via `IFLOW_TRACE_PUBLIC_KEY`, never the `public_key` embedded in the seal (which
 a forger controls). An unknown algorithm or a missing trusted key is a distinct,
 non-conformant `T3`.
+
+### Requiring a signature (downgrade protection)
+
+The bare hash chain proves **integrity**, not **authenticity**: a forger can
+edit an event, recompute every downstream link, and drop the seal's
+`signatures` list, leaving a chain-valid but *unsigned* witness. Because sealing
+is opt-in, such a witness is conformant by default — so an operator who expects
+signed witnesses must say so:
+
+```bash
+# Reject a witness that carries no signature verifying against the supplied
+# keys (a stripped or absent seal), instead of silently accepting it.
+export IFLOW_TRACE_PUBLIC_KEY="trace_ed25519.pub"   # or IFLOW_TRACE_KEY[S]
+intentflow audit program.iflow witness.json --require-signed
+```
+
+With `--require-signed`, a witness whose seal has no signature that verifies
+against the configured keys is a non-conformant `T3` (`"trace has no signature
+that verifies against the supplied keys, but a signed witness was required"`).
+Without the flag the historical opt-in behaviour is unchanged.
