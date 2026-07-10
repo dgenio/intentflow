@@ -163,6 +163,20 @@ def test_missing_sections_are_iflow012_013_014() -> None:
     assert codes.get("IFLOW014") == "warning"  # no evidence
 
 
+def test_evidence_required_without_verification_is_flagged_iflow012() -> None:
+    # A goal that ingests required evidence but declares no verification rules is
+    # "ungrounded trust in untrusted input" (see docs/threat-model.md, #29). The
+    # existing IFLOW012 already fires on it — no separate rule is needed.
+    src = (
+        "goal G {\n  objective:\n    summarize the logs\n"
+        "  evidence:\n    require logs\n    require config\n"
+        "  output:\n    summary: string\n}\n"
+    )
+    codes = _codes(src)
+    assert codes.get("IFLOW012") == "warning"  # no verification over required evidence
+    assert "IFLOW014" not in codes  # evidence *is* required here
+
+
 def test_max_tokens_bounds_are_iflow015() -> None:
     low = (
         "goal G {\n  objective:\n    x\n  context:\n    max_tokens 10\n"

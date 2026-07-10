@@ -7,6 +7,31 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 ## [Unreleased]
 
 ### Added
+- **Docs, adoption & hygiene sweep**: `LICENSE` (MIT) plus `[project.urls]`
+  and an `intentflow/py.typed` typing marker, now shipped in the built
+  sdist/wheel (#41); `docs/api-stability.md` defining the semver-covered public
+  surface and internal boundaries (#39); `docs/threat-model.md` and
+  `SECURITY.md` (#29); `docs/cli-conventions.md` with a CLI surface budget
+  (#92); reference/onboarding docs — `docs/language-reference.md` (#14),
+  `docs/quickstart.md` (#15), `docs/concepts.md` (#85), `docs/backends.md`
+  (#87), `docs/embedding.md` (#86), `docs/adr/0002-minimal-grammar-and-deterministic-simulator.md`
+  (#50); a MkDocs (Material) site (`mkdocs.yml`, `.github/workflows/docs.yml`)
+  (#16); community infrastructure — `CONTRIBUTING.md`, `CODE_OF_CONDUCT.md`, a
+  PR template, issue-template config, discussion templates (#26, #101);
+  supply-chain hygiene — `.github/dependabot.yml` and a `pip-audit` workflow
+  (#79); a `Dockerfile` and `.devcontainer/` (#96); adoption assets — a
+  regenerable tamper-demo (`examples/tamper_demo.py`, #28), an example gallery
+  index (#30), model-routing/escalation examples (#146), and a README demo
+  block with a checked-in recording (#100).
+- **`lint --json`**: `intentflow lint` gains machine-readable JSON output,
+  matching `validate --json` (#92).
+- **Evidence content digests**: each collected evidence item records a
+  `content_digest` (SHA-256 of the summary shown to the model), witnessed in
+  the `evidence_collected` trace event, so an auditor can confirm exactly what
+  content a run used (#29).
+- **New `docs` and `audit` optional-dependency groups** (`mkdocs`/
+  `mkdocs-material`; `pip-audit`/`cyclonedx-bom`). The runtime core stays
+  dependency-free.
 - **`intentflow/trace.py`**: trace primitives (`Trace`, `link_hash`,
   `GENESIS_HASH`, `CANONICAL_PHASES`) extracted into a dedicated module, plus a
   shared event vocabulary (`Event` constants and the `KNOWN_EVENTS` set). The
@@ -72,9 +97,23 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   without network access or SDKs. (#44)
 
 ### Changed
+- **`intentflow run` help** now groups flags (backend / target selection /
+  approvals / judging / trace output) via argparse argument groups. Parsing is
+  unchanged (#92).
+- **Shared grammar** moved to an internal `intentflow._grammar` module; the
+  formatter no longer imports the parser's underscore-prefixed regexes. No
+  behavior change (#39).
 - Trace event names are now defined once as `trace.Event` constants and shared
   by the runtime, the action gate, and the auditor (previously duplicated string
   literals across three modules). Hash output is unchanged.
+
+### Security
+- **Untrusted evidence is delimited in prompts.** Collected evidence is wrapped
+  in explicit fences and marked as data (not instructions) before being sent to
+  the model — the standard prompt-injection mitigation (OWASP LLM01). Documented
+  in `docs/threat-model.md` (#29).
+- Because evidence-block wording changed, the exact prompt text sent to the
+  model differs from prior releases; the delimited content is the same evidence.
 - **`trace_id` derivation**: now `sha256(plan_digest + trace_chain_root)` instead
   of re-serializing the whole `{plan, trace}` document. The chain root already
   commits to every trace event, so the id no longer scales with trace length

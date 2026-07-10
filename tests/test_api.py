@@ -123,3 +123,34 @@ def test_public_api_exports() -> None:
                  "BackendResponse", "Diagnostic", "analyze_program",
                  "execute_program", "default_registry"):
         assert hasattr(intentflow, name), name
+
+
+#: The semver-covered public surface documented in docs/api-stability.md. Kept
+#: in sync with that doc; a change here is a change to the stability promise.
+STABLE_PUBLIC_API = (
+    "__version__",
+    "load", "load_source", "IntentFlowProgram", "execute_program", "run_pipeline",
+    "analyze_program", "analyze_goal", "Diagnostic",
+    "compile_program", "compile_goal", "ExecutionPlan",
+    "audit_document", "audit_result",
+    "ParseError", "CompileError", "BackendError", "ActionDenied",
+    "ToolRegistry", "Tool", "Approver", "Judge",
+)
+
+#: Deprecated aliases retained for one release; scheduled for removal by #107.
+DEPRECATED_ALIASES = (
+    "SimulationRuntime", "SimulatorBackend", "OpenAICompatibleBackend",
+)
+
+
+def test_documented_stable_api_is_importable() -> None:
+    for name in STABLE_PUBLIC_API:
+        assert hasattr(intentflow, name), name
+        assert name in intentflow.__all__, f"{name} documented public but not in __all__"
+
+
+def test_deprecated_aliases_still_present_until_removed() -> None:
+    # #39 documents these as deprecated; removal is owned by #107. Until then
+    # they must keep importing so we don't break callers ahead of that issue.
+    for name in DEPRECATED_ALIASES:
+        assert hasattr(intentflow, name), name

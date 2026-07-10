@@ -95,7 +95,12 @@
         "origin": { "type": "string" },
         "stance": { "type": "string" },
         "trusted": { "type": "boolean" },
-        "summary": { "type": ["string", "null"] }
+        "summary": { "type": ["string", "null"] },
+        "content_digest": {
+          "type": "string",
+          "pattern": "^sha256:[0-9a-f]{64}$",
+          "description": "SHA-256 of the evidence summary the model was shown, present when the item has content. Lets an auditor confirm exactly what content the run used."
+        }
       }
     },
     "verification": {

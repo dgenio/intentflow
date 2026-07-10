@@ -70,6 +70,22 @@ _OPS: dict[str, Callable[[float, float], bool]] = {
 }
 
 
+def _with_digest(item: dict[str, Any]) -> dict[str, Any]:
+    """Attach a ``content_digest`` over the evidence summary the model sees.
+
+    The digest lets an auditor confirm *exactly* what content was fed to the
+    model for a given evidence id — evidence is untrusted input, so recording a
+    hash of it (rather than trusting a later re-read of the source) closes the
+    gap between "what the source says now" and "what the run actually used".
+    Items with no content (blocked/missing) carry no digest.
+    """
+    summary = item.get("summary")
+    if isinstance(summary, str):
+        digest = hashlib.sha256(summary.encode("utf-8")).hexdigest()
+        item["content_digest"] = f"sha256:{digest}"
+    return item
+
+
 def calibrate(raw: float, policy: dict[str, Any]) -> float:
     """Map raw self-reported confidence to calibrated confidence."""
     if policy.get("method") == "shrinkage":
@@ -283,13 +299,17 @@ class GoalRuntime:
         }
         if source in self.seed_evidence:
             seeded = self.seed_evidence[source]
-            return {**base, "summary": seeded["summary"], "origin": seeded["origin"]}
+            return _with_digest(
+                {**base, "summary": seeded["summary"], "origin": seeded["origin"]}
+            )
         if self.registry is not None:
             tool = self.registry.tool_for_source(source)
             if tool is not None:
                 try:
                     content = self.gate.invoke(tool.action, tool.handler, source)
-                    return {**base, "summary": content, "origin": f"tool:{tool.action}"}
+                    return _with_digest(
+                        {**base, "summary": content, "origin": f"tool:{tool.action}"}
+                    )
                 except ActionDenied:
                     return {**base, "summary": None, "origin": "blocked"}
                 except ToolError as exc:
@@ -303,11 +323,13 @@ class GoalRuntime:
                 # A workspace is in play but nothing serves this source.
                 return {**base, "summary": None, "origin": "missing"}
             return {**base, "summary": None, "origin": "missing"}
-        return {
-            **base,
-            "summary": f"[simulated] evidence collected from '{source}'",
-            "origin": "simulated",
-        }
+        return _with_digest(
+            {
+                **base,
+                "summary": f"[simulated] evidence collected from '{source}'",
+                "origin": "simulated",
+            }
+        )
 
     def _build_messages(self) -> None:
         self._phase("build_messages", "assemble the staged prompt plan")

@@ -20,6 +20,7 @@ from __future__ import annotations
 import re
 from pathlib import Path
 
+from intentflow._grammar import GOAL_RE, PIPELINE_RE, SECTION_RE, STAGE_RE
 from intentflow.iflow_ast import (
     Goal,
     Pipeline,
@@ -30,10 +31,13 @@ from intentflow.iflow_ast import (
     SECTION_NAMES,
 )
 
-_GOAL_RE = re.compile(r"^goal\s+([A-Za-z_][A-Za-z0-9_]*)\s*\{$")
-_PIPELINE_RE = re.compile(r"^pipeline\s+([A-Za-z_][A-Za-z0-9_]*)\s*\{$")
-_STAGE_RE = re.compile(r"^stage\s+([A-Za-z_][A-Za-z0-9_]*)$")
-_SECTION_RE = re.compile(r"^([a-z_]+)\s*:$")
+# Backwards-compatible module-local aliases. The canonical definitions now
+# live in :mod:`intentflow._grammar` (shared with the formatter); these names
+# remain so existing references inside this module keep working.
+_GOAL_RE = GOAL_RE
+_PIPELINE_RE = PIPELINE_RE
+_STAGE_RE = STAGE_RE
+_SECTION_RE = SECTION_RE
 
 
 class ParseError(Exception):
