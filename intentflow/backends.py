@@ -30,10 +30,13 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import time
 from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any, Protocol
+
+from intentflow.reliability import HTTPTimeout, RetryPolicy
 
 
 @dataclass
@@ -69,23 +72,77 @@ class BackendError(RuntimeError):
     """A backend failed to produce a response (network, provider, etc.)."""
 
 
+#: A whole reply wrapped in a single ```` ``` ```` / ```` ```json ```` fence.
+#: Matched (not character-stripped) so backticks *inside* the content survive.
+_CODE_FENCE_RE = re.compile(
+    r"\A```(?:json)?\s*\n?(.*?)\n?```\Z",
+    re.DOTALL | re.IGNORECASE,
+)
+
+
 def strip_code_fences(text: str) -> str:
     text = text.strip()
-    if text.startswith("```"):
-        text = text.strip("`")
-        if text.lower().startswith("json"):
-            text = text[len("json"):]
-        text = text.strip()
+    match = _CODE_FENCE_RE.match(text)
+    if match:
+        return match.group(1).strip()
     return text
 
 
-def try_parse_json(text: str) -> dict[str, Any] | None:
-    """Best-effort parse of a model reply into a JSON object."""
-    try:
-        payload = json.loads(strip_code_fences(text))
-    except (json.JSONDecodeError, ValueError):
+def _extract_json_object(text: str) -> str | None:
+    """Return the first balanced ``{...}`` substring in ``text``, or ``None``.
+
+    Real models often wrap the JSON object in prose ("Here is the result:\n
+    {...}\nLet me know if...") or emit trailing commentary. This scans for the
+    first ``{`` and tracks brace depth, ignoring braces inside strings and
+    escaped characters, so a malformed-but-recoverable reply still parses
+    instead of failing the whole run.
+    """
+    start = text.find("{")
+    if start == -1:
         return None
-    return payload if isinstance(payload, dict) else None
+    depth = 0
+    in_string = False
+    escaped = False
+    for index in range(start, len(text)):
+        char = text[index]
+        if in_string:
+            if escaped:
+                escaped = False
+            elif char == "\\":
+                escaped = True
+            elif char == '"':
+                in_string = False
+            continue
+        if char == '"':
+            in_string = True
+        elif char == "{":
+            depth += 1
+        elif char == "}":
+            depth -= 1
+            if depth == 0:
+                return text[start : index + 1]
+    return None
+
+
+def try_parse_json(text: str) -> dict[str, Any] | None:
+    """Best-effort parse of a model reply into a JSON object.
+
+    Tries the fenced/stripped reply first, then falls back to extracting the
+    first balanced JSON object embedded in surrounding prose. Returns ``None``
+    only when no JSON object can be recovered at all.
+    """
+    candidates = [strip_code_fences(text)]
+    embedded = _extract_json_object(text)
+    if embedded is not None and embedded not in candidates:
+        candidates.append(embedded)
+    for candidate in candidates:
+        try:
+            payload = json.loads(candidate)
+        except (json.JSONDecodeError, ValueError):
+            continue
+        if isinstance(payload, dict):
+            return payload
+    return None
 
 
 #: The strict JSON shape every backend asks the model to emit, so the result
@@ -286,6 +343,8 @@ class _ChatBackend:
     model_name = "unknown"
     last_usage: dict[str, int] | None = None
     last_finish_reason: str | None = None
+    #: No retries by default; network-backed subclasses install a real policy.
+    retry_policy: RetryPolicy = RetryPolicy.disabled()
 
     def complete(self, system: str, user: str) -> str:  # pragma: no cover - abstract
         raise NotImplementedError
@@ -298,12 +357,12 @@ class _ChatBackend:
         user: str,
     ) -> BackendResponse:
         start = time.perf_counter()
-        try:
-            text = self.complete(system, user)
-        except (NotImplementedError, BackendError):
-            raise
-        except Exception as exc:  # provider/network errors become BackendError
-            raise BackendError(f"backend {self.name!r} failed: {exc}") from exc
+        # The retry policy bounds transient provider/network failures and, on
+        # exhaustion, raises BackendError — never a partial success.
+        text = self.retry_policy.run(
+            lambda: self.complete(system, user),
+            describe=f"backend {self.name!r}",
+        )
         latency = (time.perf_counter() - start) * 1000.0
         return BackendResponse(
             raw_text=text,
@@ -320,22 +379,36 @@ class AnthropicCognition(_ChatBackend):
 
     name = "anthropic"
 
-    def __init__(self, model: str = "claude-sonnet-4-6", max_tokens: int = 2000) -> None:
-        try:
-            import anthropic
-        except ImportError as exc:  # pragma: no cover - optional dependency
-            raise RuntimeError(
-                "the 'anthropic' backend requires the optional dependency: "
-                "pip install 'intentflow[llm]'"
-            ) from exc
-        if not os.environ.get("ANTHROPIC_API_KEY"):
-            raise RuntimeError(
-                "the 'anthropic' backend requires ANTHROPIC_API_KEY to be set"
-            )
-        self._client = anthropic.Anthropic()
+    def __init__(
+        self,
+        model: str = "claude-sonnet-4-6",
+        max_tokens: int = 2000,
+        *,
+        client: Any = None,
+        timeout: HTTPTimeout | None = None,
+        retry_policy: RetryPolicy | None = None,
+    ) -> None:
+        self._timeout = timeout or HTTPTimeout.from_env()
+        # IntentFlow owns retries and timeouts, so the SDK's own retry loop is
+        # disabled — one place decides how many times we try.
+        if client is None:
+            try:
+                import anthropic
+            except ImportError as exc:  # pragma: no cover - optional dependency
+                raise RuntimeError(
+                    "the 'anthropic' backend requires the optional dependency: "
+                    "pip install 'intentflow[llm]'"
+                ) from exc
+            if not os.environ.get("ANTHROPIC_API_KEY"):
+                raise RuntimeError(
+                    "the 'anthropic' backend requires ANTHROPIC_API_KEY to be set"
+                )
+            client = anthropic.Anthropic(max_retries=0)
+        self._client = client
         self._model = model
         self.model_name = model
         self._max_tokens = max_tokens
+        self.retry_policy = retry_policy or RetryPolicy.from_env()
 
     def complete(self, system: str, user: str) -> str:
         response = self._client.messages.create(
@@ -343,6 +416,7 @@ class AnthropicCognition(_ChatBackend):
             max_tokens=self._max_tokens,
             system=system,
             messages=[{"role": "user", "content": user}],
+            timeout=self._timeout.as_sdk(),
         )
         usage = getattr(response, "usage", None)
         if usage is not None:
@@ -372,46 +446,66 @@ class OpenAICompatibleCognition(_ChatBackend):
 
     name = "openai"
 
-    def __init__(self, model: str | None = None, max_tokens: int = 2000) -> None:
-        try:
-            import openai  # noqa: F401
-        except ImportError as exc:  # pragma: no cover - optional dependency
-            raise RuntimeError(
-                "the 'openai' backend requires the optional dependency: "
-                "pip install 'intentflow[openai]' (or: pip install openai)"
-            ) from exc
-        api_key = os.environ.get("OPENAI_API_KEY")
-        if not api_key:
-            raise RuntimeError(
-                "the 'openai' backend requires OPENAI_API_KEY to be set "
-                "(set OPENAI_BASE_URL/OPENAI_MODEL to target other providers)"
-            )
-        import openai
+    def __init__(
+        self,
+        model: str | None = None,
+        max_tokens: int = 2000,
+        *,
+        client: Any = None,
+        timeout: HTTPTimeout | None = None,
+        retry_policy: RetryPolicy | None = None,
+    ) -> None:
+        self._timeout = timeout or HTTPTimeout.from_env()
+        if client is None:
+            try:
+                import openai  # noqa: F401
+            except ImportError as exc:  # pragma: no cover - optional dependency
+                raise RuntimeError(
+                    "the 'openai' backend requires the optional dependency: "
+                    "pip install 'intentflow[openai]' (or: pip install openai)"
+                ) from exc
+            api_key = os.environ.get("OPENAI_API_KEY")
+            if not api_key:
+                raise RuntimeError(
+                    "the 'openai' backend requires OPENAI_API_KEY to be set "
+                    "(set OPENAI_BASE_URL/OPENAI_MODEL to target other providers)"
+                )
+            import openai
 
-        self._client = openai.OpenAI(
-            api_key=api_key, base_url=os.environ.get("OPENAI_BASE_URL") or None
-        )
+            # IntentFlow owns retries; disable the SDK's own retry loop.
+            client = openai.OpenAI(
+                api_key=api_key,
+                base_url=os.environ.get("OPENAI_BASE_URL") or None,
+                max_retries=0,
+            )
+        self._client = client
         self._model = model or os.environ.get("OPENAI_MODEL") or "gpt-4o-mini"
         self.model_name = self._model
         self._max_tokens = max_tokens
+        self.retry_policy = retry_policy or RetryPolicy.from_env()
 
     def complete(self, system: str, user: str) -> str:
         messages = [
             {"role": "system", "content": system},
             {"role": "user", "content": user},
         ]
+        timeout = self._timeout.as_sdk()
         try:
             response = self._client.chat.completions.create(
                 model=self._model,
                 max_tokens=self._max_tokens,
                 response_format={"type": "json_object"},
                 messages=messages,
+                timeout=timeout,
             )
         except Exception:
             # Some OpenAI-compatible servers reject response_format; retry
             # without it before giving up.
             response = self._client.chat.completions.create(
-                model=self._model, max_tokens=self._max_tokens, messages=messages
+                model=self._model,
+                max_tokens=self._max_tokens,
+                messages=messages,
+                timeout=timeout,
             )
         usage = getattr(response, "usage", None)
         if usage is not None:
@@ -520,6 +614,46 @@ class RecordingBackend(_ChatBackend):
         reply = self._inner.complete(system, user)
         self.last_usage = getattr(self._inner, "last_usage", None)
         self.last_finish_reason = getattr(self._inner, "last_finish_reason", None)
+        self._cassette.put(system, user, reply)
+        self._cassette.save()
+        return reply
+
+
+class ReplayChat:
+    """A ``(system, user) -> text`` chat callable answered from a cassette.
+
+    The LLM judge talks to its model through a plain chat callable, so the same
+    cassette mechanism that makes cognition replayable makes *judge* calls
+    replayable too — recorded once, replayed in CI with no key. Backend and
+    judge interactions can share one cassette file: their request fingerprints
+    never collide.
+    """
+
+    def __init__(self, cassette: Cassette) -> None:
+        self._cassette = cassette
+
+    def __call__(self, system: str, user: str) -> str:
+        reply = self._cassette.get(system, user)
+        if reply is None:
+            raise CassetteMiss(
+                f"no recorded judge reply in cassette {self._cassette.path} for "
+                "this interaction; record it first with a real judge"
+            )
+        return reply
+
+
+class RecordingChat:
+    """Wrap a chat callable, persisting every raw reply to a cassette."""
+
+    def __init__(self, inner: Any, cassette: Cassette) -> None:
+        self._inner = inner
+        self._cassette = cassette
+
+    def __call__(self, system: str, user: str) -> str:
+        cached = self._cassette.get(system, user)
+        if cached is not None:
+            return cached
+        reply = self._inner(system, user)
         self._cassette.put(system, user, reply)
         self._cassette.save()
         return reply

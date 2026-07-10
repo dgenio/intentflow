@@ -51,6 +51,19 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   (`trace.TraceSinkError`). `auditor.verify_trace_stream` and `intentflow audit`
   (auto-detecting a JSONL stream) chain-verify a stream and distinguish a
   complete run from a valid-but-truncated prefix.
+- **Reliability primitives** (`intentflow/reliability.py`): `HTTPTimeout` and a
+  bounded, fail-closed `RetryPolicy` with deterministic exponential backoff,
+  shared by real cognition backends and the LLM judge. Configurable via
+  `INTENTFLOW_HTTP_TIMEOUT`, `INTENTFLOW_HTTP_CONNECT_TIMEOUT`,
+  `INTENTFLOW_MAX_ATTEMPTS`, `INTENTFLOW_RETRY_BASE_DELAY`,
+  `INTENTFLOW_RETRY_MAX_DELAY`, and `INTENTFLOW_RETRY_BACKOFF`. (#73, #135)
+- **Explicit HTTP timeouts** threaded into every Anthropic/OpenAI request; the
+  provider SDKs' own retry loops are disabled so IntentFlow owns retry policy. (#135, #73)
+- **Judge cassettes**: `ReplayChat`/`RecordingChat` and a `replay` judge, so
+  `judged` verification rules can be recorded once and replayed in CI with no
+  API key — reusing the existing `--cassette`/`--record-cassette` flags. (#75)
+- Fake-client tests exercising the real backends' assemble → call → parse path
+  without network access or SDKs. (#44)
 
 ### Changed
 - Trace event names are now defined once as `trace.Event` constants and shared
@@ -73,6 +86,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - **Breaking (seal shape)**: the trace seal now carries a `signatures` list
   (`[{algo, signature, key_id?}]`) instead of a single flat `signature` field,
   so HMAC and (new) Ed25519 signatures coexist and HMAC seals can be key-id'd.
+- `try_parse_json` now recovers a balanced JSON object embedded in surrounding
+  prose, reducing spurious parse failures on real model replies. (#35)
+- Code-fence stripping matches a whole ` ```json ` fence with a regex instead of
+  character-stripping backticks, so backticks inside the reply survive. (#35)
+- The LLM judge fails **closed** on an unparseable reply (records a failing
+  verdict instead of raising), and retries transient chat failures. (#35, #73)
 
 ### Documented
 - `docs/adr/0001-canonical-json-hashing.md`: adopts RFC 8785 (JCS) as the target
@@ -82,6 +101,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - `docs/trace-scaling-investigation.md` + `scripts/bench_trace.py`: measured
   trace memory (~1.6 KB/event, linear) and trace-id hashing cost, motivating the
   chain-root `trace_id` derivation and the streaming sink.
+### Fixed
+- The embedding API (`IntentFlowProgram.run`/`run_pipeline`) now threads its
+  `cassette` argument to the judge as it already does for the backend, so a
+  `replay` judge reads recorded verdicts and a real judge records them — an
+  API-driven run is fully replayable. Previously the cassette was dropped, so
+  `judge="replay"` raised "requires a cassette path" and recording judges never
+  captured their verdicts. (#75)
 
 ## [0.6.0] - 2026-06-14
 

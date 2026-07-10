@@ -58,13 +58,16 @@ from intentflow.backends import (
     OpenAICompatibleBackend,
     OpenAICompatibleCognition,
     RecordingBackend,
+    RecordingChat,
     ReplayBackend,
+    ReplayChat,
     SimulatedCognition,
     SimulatorBackend,
     make_backend,
 )
 from intentflow.explain import explain_program, render_explanation
 from intentflow.judges import Judge, JudgeVerdict, LLMJudge, SimulatedJudge, make_judge
+from intentflow.reliability import HTTPTimeout, RetryPolicy
 from intentflow.tools import (
     ActionDenied,
     ActionGate,
@@ -137,6 +140,7 @@ __all__ = [
     "Goal",
     "GoalMetadata",
     "GoalRuntime",
+    "HTTPTimeout",
     "IntentFlowProgram",
     "Judge",
     "JudgeVerdict",
@@ -154,7 +158,10 @@ __all__ = [
     "PromptBlock",
     "PromptPlan",
     "RecordingBackend",
+    "RecordingChat",
     "ReplayBackend",
+    "ReplayChat",
+    "RetryPolicy",
     "RiskProfile",
     "Section",
     "SimulatedCognition",
