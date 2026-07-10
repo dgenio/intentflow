@@ -25,7 +25,7 @@ from pathlib import Path
 
 from intentflow._version import __version__
 from intentflow.analyzer import analyze_program, errors_in, warnings_in
-from intentflow.auditor import audit_document
+from intentflow.auditor import audit_document, verify_trace_stream
 from intentflow.backends import BACKENDS, make_backend
 from intentflow.compiler import (
     CompileError,
@@ -130,25 +130,26 @@ def cmd_compile(args: argparse.Namespace) -> int:
     return 0
 
 
-def _write_trace_artifact(
-    trace_dir: str, document: dict, result: dict, backend_name: str, program
-) -> str:
-    """Write a self-contained, inspectable witness of a run to ``trace_dir``.
+#: Discriminator + version marker for the on-disk witness envelope. Both
+#: ``--trace-dir`` and ``--trace-out`` write this one shape; ``audit``/``replay``
+#: key off ``artifact`` to unwrap it. The embedded result carries the
+#: format_version the auditor version-checks (see #38 / docs/formats.md).
+WITNESS_ARTIFACT = "intentflow-trace"
 
-    The artifact bundles the run result with provenance (source path and
-    hash, backend, timestamp, compiled-plan hash) so a third party can later
-    replay it with ``intentflow replay`` and verify it with
-    ``intentflow audit``."""
-    directory = Path(trace_dir)
-    directory.mkdir(parents=True, exist_ok=True)
-    label = result.get("goal") or result.get("pipeline") or "run"
-    trace_id = result.get("trace_id") or plan_hash(result)
-    timestamp = _dt.datetime.now(_dt.timezone.utc).strftime("%Y%m%dT%H%M%SZ")
-    path = directory / f"{label}-{timestamp}-{trace_id}.json"
-    artifact = {
-        "artifact": "intentflow-trace",
+
+def build_witness_envelope(document: dict, result: dict, backend_name: str, program) -> dict:
+    """The canonical on-disk witness: one run result wrapped with provenance.
+
+    Both ``--trace-dir`` and ``--trace-out`` emit exactly this shape, so a third
+    party can replay it with ``intentflow replay`` and verify it with
+    ``intentflow audit`` regardless of which flag produced it — no shape
+    heuristics on the happy path. The provenance (source path + hash, compiled
+    plan hash, backend, timestamp) lets the witness stand on its own; the
+    embedded ``result`` is the artifact the auditor checks."""
+    return {
+        "artifact": WITNESS_ARTIFACT,
         "intentflow_version": __version__,
-        "trace_id": trace_id,
+        "trace_id": result.get("trace_id") or plan_hash(result),
         "timestamp": _dt.datetime.now(_dt.timezone.utc).isoformat(),
         "source": program.source_name,
         "source_hash": source_hash(program.source_text),
@@ -157,7 +158,21 @@ def _write_trace_artifact(
         "status": result.get("status"),
         "result": result,
     }
-    path.write_text(json.dumps(artifact, indent=2), encoding="utf-8")
+
+
+def _write_trace_artifact(
+    trace_dir: str, document: dict, result: dict, backend_name: str, program
+) -> str:
+    """Write the canonical witness envelope to a generated path under
+    ``trace_dir`` (one file per result)."""
+    directory = Path(trace_dir)
+    directory.mkdir(parents=True, exist_ok=True)
+    label = result.get("goal") or result.get("pipeline") or "run"
+    trace_id = result.get("trace_id") or plan_hash(result)
+    timestamp = _dt.datetime.now(_dt.timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    path = directory / f"{label}-{timestamp}-{trace_id}.json"
+    envelope = build_witness_envelope(document, result, backend_name, program)
+    path.write_text(json.dumps(envelope, indent=2), encoding="utf-8")
     return str(path)
 
 
@@ -195,13 +210,78 @@ def _build_approver(args: argparse.Namespace):
     return None
 
 
-def _sign_key(args: argparse.Namespace) -> bytes | None:
+def _sealing_config(args: argparse.Namespace) -> dict:
+    """Assemble the trace-sealing keyword args for a run from ``--sign-trace``.
+
+    ``--sign-trace`` seals the trace with HMAC (``IFLOW_TRACE_KEY``, optionally
+    labelled by ``IFLOW_TRACE_KEY_ID``) and/or Ed25519 (``IFLOW_TRACE_SIGNING_KEY``,
+    a PEM private-key path); at least one key source must be set. The two
+    compose — set both to dual-sign. See ``docs/trace-signing.md``."""
     if not args.sign_trace:
-        return None
-    key = os.environ.get("IFLOW_TRACE_KEY")
-    if not key:
-        raise RuntimeError("--sign-trace requires the IFLOW_TRACE_KEY environment variable")
-    return key.encode("utf-8")
+        return {"sign_key": None, "key_id": None, "signers": None}
+    hmac_secret = os.environ.get("IFLOW_TRACE_KEY")
+    signing_key_path = os.environ.get("IFLOW_TRACE_SIGNING_KEY")
+    if not hmac_secret and not signing_key_path:
+        raise RuntimeError(
+            "--sign-trace requires IFLOW_TRACE_KEY (HMAC) and/or "
+            "IFLOW_TRACE_SIGNING_KEY (Ed25519 private-key PEM path)"
+        )
+    key_id = os.environ.get("IFLOW_TRACE_KEY_ID") or None
+    sign_key = hmac_secret.encode("utf-8") if hmac_secret else None
+    signers: list = []
+    if signing_key_path:
+        from intentflow.signing import Ed25519Signer
+
+        try:
+            pem = Path(signing_key_path).read_bytes()
+        except OSError as exc:
+            raise RuntimeError(
+                f"IFLOW_TRACE_SIGNING_KEY: cannot read {signing_key_path!r}: {exc}"
+            ) from exc
+        signers.append(Ed25519Signer(pem, key_id))
+    return {"sign_key": sign_key, "key_id": key_id, "signers": signers}
+
+
+def _verify_public_keys() -> dict:
+    """The Ed25519 public keys ``audit`` uses to verify seals.
+
+    ``IFLOW_TRACE_PUBLIC_KEY`` (a PEM public-key path) is the default trusted
+    key (stored under ``None``), so it verifies any Ed25519 seal regardless of
+    its ``key_id`` label. No public key configured → no Ed25519 verification."""
+    path = os.environ.get("IFLOW_TRACE_PUBLIC_KEY")
+    if not path:
+        return {}
+    return {None: Path(path).read_bytes()}
+
+
+def _parse_key_set(raw: str) -> dict[str, bytes]:
+    """Parse ``IFLOW_TRACE_KEYS`` ("id=secret,id2=secret2") into {id: key}.
+
+    Whitespace around ids/secrets is trimmed; malformed pairs (no ``=``) are
+    skipped. Key material is never logged."""
+    keys: dict[str, bytes] = {}
+    for pair in raw.split(","):
+        pair = pair.strip()
+        if not pair or "=" not in pair:
+            continue
+        key_id, _, secret = pair.partition("=")
+        key_id, secret = key_id.strip(), secret.strip()
+        if key_id and secret:
+            keys[key_id] = secret.encode("utf-8")
+    return keys
+
+
+def _verify_keys() -> tuple[bytes | None, dict[str, bytes]]:
+    """The keys ``audit`` uses to verify HMAC trace seals.
+
+    ``IFLOW_TRACE_KEY`` is the default (keyless-seal) key, retained for the
+    single-key case; ``IFLOW_TRACE_KEYS`` supplies a rotation set of
+    ``id=secret`` pairs used to verify key-id'd seals."""
+    default = os.environ.get("IFLOW_TRACE_KEY")
+    sign_key = default.encode("utf-8") if default else None
+    raw = os.environ.get("IFLOW_TRACE_KEYS")
+    keys = _parse_key_set(raw) if raw else {}
+    return sign_key, keys
 
 
 def cmd_run(args: argparse.Namespace) -> int:
@@ -216,69 +296,81 @@ def cmd_run(args: argparse.Namespace) -> int:
         # fingerprints never collide with the backend's.
         judge_cassette = args.cassette if args.judge == "replay" else args.record_cassette
         judge = make_judge(args.judge, judge_cassette) if args.judge else None
-        sign_key = _sign_key(args)
+        seal_kwargs = _sealing_config(args)
     except (ValueError, RuntimeError) as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 1
     approver = _build_approver(args)
     printer = print if args.verbose else None
 
-    if args.pipeline:
-        document = _compile_or_fail(program)
-        names = [p["name"] for p in document["pipelines"]]
-        if args.pipeline not in names:
-            print(
-                f"error: pipeline {args.pipeline!r} not found; available: {names}",
-                file=sys.stderr,
-            )
-            return 1
-        results = [
-            run_pipeline(
-                document,
-                args.pipeline,
-                backend=backend,
-                printer=printer,
-                workspace=args.workspace,
-                approver=approver,
-                judge=judge,
-                sign_key=sign_key,
-            )
-        ]
-    elif args.goal:
-        document = _compile_or_fail(program)
-        results = [
-            execute_program(
-                program,
-                args.goal,
-                backend=backend,
-                printer=printer,
-                workspace=args.workspace,
-                approver=approver,
-                judge=judge,
-                sign_key=sign_key,
-            )
-        ]
-    else:
-        # Compile up front for the trace artifact, but let execute_program own
-        # the analyze/compile phases so failed_validation is a *status*.
-        diagnostics = analyze_program(program)
-        document = compile_program(program) if not errors_in(diagnostics) else {}
-        results = [
-            execute_program(
-                program,
-                goal.name,
-                backend=backend,
-                printer=printer,
-                workspace=args.workspace,
-                approver=approver,
-                judge=judge,
-                sign_key=sign_key,
-            )
-            for goal in program.goals
-        ]
-        # Deduplicate: a failed_validation result is identical per goal.
-        if results and results[0]["status"] == "failed_validation":
-            results = results[:1]
+    # An opt-in JSONL sink streams each event to disk as it is recorded, so a
+    # hard crash still leaves a chain-verifiable prefix. Opened here and closed
+    # in the finally so a fail-closed TraceSinkError still releases the file.
+    stream = open(args.trace_stream, "w", encoding="utf-8") if args.trace_stream else None
+    if stream is not None:
+        seal_kwargs["trace_sink"] = stream
+    try:
+        if args.pipeline:
+            document = _compile_or_fail(program)
+            names = [p["name"] for p in document["pipelines"]]
+            if args.pipeline not in names:
+                print(
+                    f"error: pipeline {args.pipeline!r} not found; available: {names}",
+                    file=sys.stderr,
+                )
+                return 1
+            results = [
+                run_pipeline(
+                    document,
+                    args.pipeline,
+                    backend=backend,
+                    printer=printer,
+                    workspace=args.workspace,
+                    approver=approver,
+                    judge=judge,
+                    **seal_kwargs,
+                )
+            ]
+        elif args.goal:
+            document = _compile_or_fail(program)
+            results = [
+                execute_program(
+                    program,
+                    args.goal,
+                    backend=backend,
+                    printer=printer,
+                    workspace=args.workspace,
+                    approver=approver,
+                    judge=judge,
+                    **seal_kwargs,
+                )
+            ]
+        else:
+            # Compile up front for the trace artifact, but let execute_program own
+            # the analyze/compile phases so failed_validation is a *status*.
+            diagnostics = analyze_program(program)
+            document = compile_program(program) if not errors_in(diagnostics) else {}
+            results = [
+                execute_program(
+                    program,
+                    goal.name,
+                    backend=backend,
+                    printer=printer,
+                    workspace=args.workspace,
+                    approver=approver,
+                    judge=judge,
+                    **seal_kwargs,
+                )
+                for goal in program.goals
+            ]
+            # Deduplicate: a failed_validation result is identical per goal.
+            if results and results[0]["status"] == "failed_validation":
+                results = results[:1]
+    finally:
+        if stream is not None:
+            stream.close()
+    if args.trace_stream:
+        print(f"\ntrace streamed to {args.trace_stream}")
 
     if args.json:
         payload = results[0] if len(results) == 1 else results
@@ -311,9 +403,23 @@ def cmd_run(args: argparse.Namespace) -> int:
             print(f"\ntrace written to {path}")
             print("  inspect it with 'intentflow replay', verify it with 'intentflow audit'")
     if args.trace_out:
-        payload = results[0] if len(results) == 1 else results
-        Path(args.trace_out).write_text(json.dumps(payload, indent=2), encoding="utf-8")
-        print(f"\nresult written to {args.trace_out}")
+        writable = [r for r in results if r["status"] != "failed_validation"]
+        if len(writable) != 1:
+            # --trace-out is one explicit path, so it takes exactly one witness.
+            # A multi-goal run (or a run where everything failed validation) has
+            # no single result to write here; direct the user to the per-result
+            # forms instead of silently writing a bare list audit cannot consume.
+            print(
+                f"error: --trace-out writes a single witness, but this run produced "
+                f"{len(writable)} auditable result(s); use --trace-dir (one file per "
+                f"result) or --goal NAME to select one goal",
+                file=sys.stderr,
+            )
+            return exit_code or 1
+        envelope = build_witness_envelope(document, writable[0], backend.name, program)
+        Path(args.trace_out).write_text(json.dumps(envelope, indent=2), encoding="utf-8")
+        print(f"\ntrace written to {args.trace_out}")
+        print("  inspect it with 'intentflow replay', verify it with 'intentflow audit'")
     return exit_code
 
 
@@ -401,8 +507,14 @@ def _load_trace_artifact(path: str) -> dict:
 
 def cmd_replay(args: argparse.Namespace) -> int:
     artifact = _load_trace_artifact(args.trace)
-    # Accept both a --trace-dir artifact and a bare --trace-out result.
-    result = artifact.get("result", artifact)
+    if not (isinstance(artifact, dict) and artifact.get("artifact") == WITNESS_ARTIFACT):
+        print(
+            "error: not an IntentFlow witness envelope; produce one with "
+            "'intentflow run ... --trace-out FILE' or '--trace-dir DIR'",
+            file=sys.stderr,
+        )
+        return 2
+    result = artifact["result"]
     if args.json:
         print(json.dumps(artifact, indent=2))
         return 0
@@ -476,7 +588,15 @@ def cmd_replay(args: argparse.Namespace) -> int:
 
     chain = result.get("trace_chain")
     if chain:
-        signed = "signed" if chain.get("signature") else "unsigned"
+        sigs = chain.get("signatures", [])
+        if sigs:
+            algos = ", ".join(
+                f"{s.get('algo')}" + (f":{s['key_id']}" if s.get("key_id") else "")
+                for s in sigs
+            )
+            signed = f"signed ({algos})"
+        else:
+            signed = "unsigned"
         print(
             f"\ntrace chain: {chain.get('length')} event(s), root "
             f"{str(chain.get('root'))[:16]}..., {signed}"
@@ -484,25 +604,81 @@ def cmd_replay(args: argparse.Namespace) -> int:
     return 0
 
 
-def cmd_audit(args: argparse.Namespace) -> int:
-    program = _load(args.file)
-    document = _compile_or_fail(program)
+def _is_trace_stream(text: str) -> bool:
+    """Distinguish a JSONL trace stream (issue #82) from a witness envelope.
+
+    An envelope (or any run result) is a single JSON value; a stream is one JSON
+    object per line. If the whole text is not a single JSON value, or the single
+    value looks like a lone trace event (has ``seq``/``hash``, not an
+    ``artifact`` marker), treat it as a stream."""
     try:
-        result = json.loads(Path(args.result).read_text(encoding="utf-8"))
+        value = json.loads(text)
+    except json.JSONDecodeError:
+        return bool(text.strip())  # multi-line JSONL → not a single JSON value
+    return (
+        isinstance(value, dict)
+        and "seq" in value
+        and "hash" in value
+        and "artifact" not in value
+    )
+
+
+def _audit_stream(path: str) -> int:
+    """Chain-verify a streamed JSONL trace and report complete vs prefix."""
+    text = Path(path).read_text(encoding="utf-8")
+    try:
+        report = verify_trace_stream(text)
+    except json.JSONDecodeError as exc:
+        print(f"error: trace stream is not valid JSONL: {exc}", file=sys.stderr)
+        return 2
+    print(json.dumps(report, indent=2))
+    if not report["chain_ok"]:
+        print("STREAM: BROKEN — the trace chain does not verify", file=sys.stderr)
+        return 1
+    if report["complete"]:
+        print(f"STREAM: COMPLETE — {report['events']} event(s), chain verified")
+    else:
+        print(
+            f"STREAM: VALID PREFIX — {report['events']} event(s) verified, "
+            "run incomplete (no run_completed event)"
+        )
+    return 0
+
+
+def cmd_audit(args: argparse.Namespace) -> int:
+    try:
+        text = Path(args.result).read_text(encoding="utf-8")
     except FileNotFoundError:
         print(f"error: result file not found: {args.result}", file=sys.stderr)
         return 2
+    # A streamed JSONL trace is chain-verified on its own (plan-independent).
+    if _is_trace_stream(text):
+        return _audit_stream(args.result)
+    program = _load(args.file)
+    document = _compile_or_fail(program)
+    try:
+        envelope = json.loads(text)
     except json.JSONDecodeError as exc:
         print(f"error: result file is not valid JSON: {exc}", file=sys.stderr)
         return 2
-    # A --trace-dir artifact wraps the run result under "result"; unwrap it so
-    # the same audit works on either a --trace-out file or a --trace-dir one.
-    if "result" in result and "goal" not in result and "pipeline" not in result:
-        result = result["result"]
-    # Verify any HMAC trace signature if the same key is available.
-    key = os.environ.get("IFLOW_TRACE_KEY")
-    sign_key = key.encode("utf-8") if key else None
-    report = audit_document(document, result, sign_key)
+    # Both --trace-dir and --trace-out write the one canonical witness envelope,
+    # so unwrapping is a single check — no shape sniffing.
+    if not (isinstance(envelope, dict) and envelope.get("artifact") == WITNESS_ARTIFACT):
+        print(
+            "error: not an IntentFlow witness envelope; produce one with "
+            "'intentflow run ... --trace-out FILE' or '--trace-dir DIR'",
+            file=sys.stderr,
+        )
+        return 2
+    result = envelope["result"]
+    # Verify any trace seal against the available keys: IFLOW_TRACE_KEY for a
+    # keyless HMAC seal, IFLOW_TRACE_KEYS ("id=secret,...") for rotated key-id'd
+    # HMAC seals, IFLOW_TRACE_PUBLIC_KEY (PEM) for Ed25519 seals.
+    sign_key, keys = _verify_keys()
+    verifiers = _verify_public_keys()
+    report = audit_document(
+        document, result, sign_key, keys, verifiers, args.require_signed
+    )
     print(json.dumps(report, indent=2))
     if report["conformant"]:
         print("AUDIT: CONFORMANT — the trace stayed inside the program's envelope")
@@ -598,14 +774,20 @@ def build_parser() -> argparse.ArgumentParser:
     p_run.add_argument(
         "--sign-trace",
         action="store_true",
-        help="HMAC-sign the trace chain using the IFLOW_TRACE_KEY env var",
+        help="seal the trace chain: HMAC via IFLOW_TRACE_KEY (+IFLOW_TRACE_KEY_ID) "
+        "and/or Ed25519 via IFLOW_TRACE_SIGNING_KEY (see docs/trace-signing.md)",
     )
     p_run.add_argument(
         "--trace-dir",
         help="write a timestamped, self-contained trace artifact per run to this dir",
     )
     p_run.add_argument(
-        "--trace-out", help="write the full result (with trace) to a JSON file"
+        "--trace-out", help="write the full witness envelope (with trace) to a JSON file"
+    )
+    p_run.add_argument(
+        "--trace-stream",
+        help="append each trace event to this JSONL file as it is recorded "
+        "(crash-safe prefix; verify with 'intentflow audit --stream')",
     )
     p_run.add_argument(
         "--json", action="store_true", help="print the full result as JSON"
@@ -659,6 +841,13 @@ def build_parser() -> argparse.ArgumentParser:
     )
     p_audit.add_argument("file", help="the .iflow source (the contract)")
     p_audit.add_argument("result", help="the result JSON from 'run' (the witness)")
+    p_audit.add_argument(
+        "--require-signed",
+        action="store_true",
+        help="reject a witness with no verifying signature (guards against a "
+        "stripped or absent seal); needs a verify key set via IFLOW_TRACE_KEY, "
+        "IFLOW_TRACE_KEYS, or IFLOW_TRACE_PUBLIC_KEY",
+    )
     p_audit.set_defaults(func=cmd_audit)
     return parser
 

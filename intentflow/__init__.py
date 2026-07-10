@@ -48,7 +48,7 @@ from intentflow.compiler import (
     compile_program,
     inspect_program,
 )
-from intentflow.auditor import audit_document, audit_result
+from intentflow.auditor import audit_document, audit_result, verify_trace_stream
 from intentflow.backends import (
     AnthropicCognition,
     BackendError,
@@ -83,6 +83,18 @@ from intentflow.tools import (
 )
 from intentflow.formatter import format_file, format_source
 from intentflow.linter import lint_program
+from intentflow.signing import Ed25519Signer, sign_root, verify_root
+from intentflow.trace import (
+    CANONICAL_PHASES,
+    GENESIS_HASH,
+    KNOWN_EVENTS,
+    TRACE_FORMAT_VERSION,
+    Event,
+    Trace,
+    TraceSigner,
+    assert_json_native,
+    link_hash,
+)
 from intentflow.runtime import (
     GoalRuntime,
     SimulationRuntime,
@@ -92,6 +104,19 @@ from intentflow.runtime import (
 from intentflow.api import IntentFlowProgram, load, load_source
 
 __all__ = [
+    "CANONICAL_PHASES",
+    "Ed25519Signer",
+    "Event",
+    "GENESIS_HASH",
+    "KNOWN_EVENTS",
+    "TRACE_FORMAT_VERSION",
+    "Trace",
+    "TraceSigner",
+    "assert_json_native",
+    "link_hash",
+    "sign_root",
+    "verify_root",
+    "verify_trace_stream",
     "ActionDenied",
     "ActionGate",
     "ActionPolicy",

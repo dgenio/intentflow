@@ -138,3 +138,42 @@ def test_pipeline_results_are_audited_per_stage() -> None:
         "DiagnoseIncident",
         "ProposeRemediation",
     ]
+
+
+# -- format-version compatibility (issue #38) -------------------------------
+
+
+def test_unsupported_plan_format_version_is_flagged(diagnose: tuple[dict, dict]) -> None:
+    document, result = diagnose
+    plan = copy.deepcopy(document["goals"][0])
+    plan["format_version"] = "99.0"
+    report = audit_result(plan, result)
+    assert report["conformant"] is False
+    assert any(v["code"] == "P2" for v in report["violations"])
+    assert any("plan format version" in v["message"] for v in report["violations"])
+
+
+def test_unsupported_result_format_version_is_flagged(diagnose: tuple[dict, dict]) -> None:
+    document, result = diagnose
+    tampered = copy.deepcopy(result)
+    tampered["format_version"] = "99.0"
+    report = audit_result(document["goals"][0], tampered)
+    assert report["conformant"] is False
+    assert any(v["code"] == "P2" for v in report["violations"])
+    assert any("result/trace format version" in v["message"] for v in report["violations"])
+
+
+def test_missing_format_version_is_flagged(diagnose: tuple[dict, dict]) -> None:
+    document, result = diagnose
+    tampered = copy.deepcopy(result)
+    tampered.pop("format_version", None)
+    report = audit_result(document["goals"][0], tampered)
+    assert any(v["code"] == "P2" for v in report["violations"])
+
+
+def test_supported_versions_audit_unchanged(diagnose: tuple[dict, dict]) -> None:
+    # In-range versions behave exactly as before: no P2, honest run conformant.
+    document, result = diagnose
+    report = audit_result(document["goals"][0], result)
+    assert not any(v["code"] == "P2" for v in report["violations"])
+    assert report["conformant"] is True

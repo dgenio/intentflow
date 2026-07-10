@@ -1,0 +1,146 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/dgenio/intentflow/schemas/result.schema.json",
+  "title": "IntentFlow run result (witness)",
+  "description": "The result a run emits: structured outputs plus the hash-chained trace the auditor verifies against a plan. IntentFlow's second contract artifact. A result is either a single-goal result or a pipeline result; both are accepted here. See docs/formats.md.",
+  "oneOf": [
+    { "$ref": "#/$defs/goalResult" },
+    { "$ref": "#/$defs/pipelineResult" }
+  ],
+  "$defs": {
+    "goalResult": {
+      "type": "object",
+      "required": [
+        "format_version",
+        "goal",
+        "status",
+        "trace",
+        "trace_chain",
+        "trace_id",
+        "verification",
+        "outputs",
+        "summary"
+      ],
+      "properties": {
+        "format_version": {
+          "type": "string",
+          "description": "Version of the result/trace format (trace.TRACE_FORMAT_VERSION)."
+        },
+        "goal": { "type": "string" },
+        "backend": { "type": ["string", "null"] },
+        "model": { "type": ["string", "null"] },
+        "status": {
+          "type": "string",
+          "enum": [
+            "completed",
+            "needs_human",
+            "blocked",
+            "failed_validation",
+            "failed_verification",
+            "backend_error"
+          ]
+        },
+        "phases": { "type": "array" },
+        "diagnostics": { "type": "array" },
+        "messages": { "type": "object" },
+        "evidence": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/evidenceItem" }
+        },
+        "backend_response": { "type": ["object", "null"] },
+        "backend_error": { "type": ["string", "null"] },
+        "outputs": { "type": "object" },
+        "citations": { "type": "array", "items": { "type": "string" } },
+        "confidence": {
+          "type": "object",
+          "properties": {
+            "raw": { "type": ["number", "null"] },
+            "calibrated": { "type": ["number", "null"] }
+          }
+        },
+        "verification": { "$ref": "#/$defs/verification" },
+        "uncertainty": { "type": "object" },
+        "action_decisions": { "type": "object" },
+        "escalations": { "type": "array" },
+        "summary": { "type": "object" },
+        "trace_id": { "type": ["string", "null"] },
+        "trace": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/traceEvent" }
+        },
+        "trace_chain": {
+          "oneOf": [{ "$ref": "#/$defs/traceChain" }, { "type": "null" }]
+        }
+      }
+    },
+    "pipelineResult": {
+      "type": "object",
+      "required": ["pipeline", "stages", "status", "trace"],
+      "properties": {
+        "pipeline": { "type": "string" },
+        "status": { "type": "string" },
+        "stages": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/goalResult" }
+        },
+        "trace": { "type": "array" }
+      }
+    },
+    "evidenceItem": {
+      "type": "object",
+      "required": ["id", "source", "origin", "trusted"],
+      "properties": {
+        "id": { "type": "string" },
+        "source": { "type": "string" },
+        "origin": { "type": "string" },
+        "stance": { "type": "string" },
+        "trusted": { "type": "boolean" },
+        "summary": { "type": ["string", "null"] }
+      }
+    },
+    "verification": {
+      "type": "object",
+      "required": ["passed", "checks", "tiers"],
+      "properties": {
+        "passed": { "type": "boolean" },
+        "checks": { "type": "array" },
+        "tiers": { "type": "object" }
+      }
+    },
+    "traceEvent": {
+      "type": "object",
+      "required": ["seq", "phase", "event", "detail", "prev_hash", "hash"],
+      "properties": {
+        "seq": { "type": "integer", "minimum": 1 },
+        "phase": { "type": "string" },
+        "event": { "type": "string" },
+        "detail": { "type": "object" },
+        "prev_hash": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+        "hash": { "type": "string", "pattern": "^[0-9a-f]{64}$" }
+      }
+    },
+    "traceChain": {
+      "type": "object",
+      "required": ["algo", "length", "root", "signatures"],
+      "properties": {
+        "algo": { "type": "string" },
+        "length": { "type": "integer", "minimum": 0 },
+        "root": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+        "signatures": {
+          "type": "array",
+          "description": "Zero or more signatures over the chain root. HMAC entries prove a shared-secret holder sealed it; Ed25519 entries are publicly verifiable. An empty list means an unsigned run.",
+          "items": {
+            "type": "object",
+            "required": ["algo", "signature"],
+            "properties": {
+              "algo": { "type": "string", "enum": ["hmac-sha256", "ed25519"] },
+              "signature": { "type": "string" },
+              "key_id": { "type": "string" },
+              "public_key": { "type": "string" }
+            }
+          }
+        }
+      }
+    }
+  }
+}

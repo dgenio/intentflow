@@ -1,0 +1,108 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/dgenio/intentflow/schemas/plan.schema.json",
+  "title": "IntentFlow execution plan",
+  "description": "A compiled IntentFlow program: the output of `intentflow compile` (compiler.compile_program). One of IntentFlow's two contract artifacts. The document wraps one or more per-goal execution plans plus pipeline declarations. Deeply nested policy objects are typed as objects but not exhaustively constrained here, so the schema catches top-level shape drift without freezing every internal policy field; see docs/formats.md for the rationale.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "format_version",
+    "intentflow_version",
+    "source",
+    "source_hash",
+    "goals",
+    "pipelines"
+  ],
+  "properties": {
+    "format_version": {
+      "type": "string",
+      "description": "Version of the plan format (compiler.PLAN_FORMAT_VERSION). Independent of intentflow_version; see docs/formats.md."
+    },
+    "intentflow_version": {
+      "type": "string",
+      "description": "Package version that produced the plan, for provenance only."
+    },
+    "source": {
+      "type": "string",
+      "description": "Name/path of the source program the plan was compiled from."
+    },
+    "source_hash": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$",
+      "description": "SHA-256 of the exact source text."
+    },
+    "goals": {
+      "type": "array",
+      "description": "One compiled execution plan per goal in the program.",
+      "items": { "$ref": "#/$defs/goalPlan" }
+    },
+    "pipelines": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/pipeline" }
+    }
+  },
+  "$defs": {
+    "goalPlan": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "format_version",
+        "goal",
+        "objective",
+        "metadata",
+        "context_policy",
+        "evidence_policy",
+        "action_policy",
+        "model_directives",
+        "verification_policy",
+        "uncertainty_policy",
+        "calibration",
+        "output_schema",
+        "risk_profile",
+        "trace_policy",
+        "prompt_plan",
+        "execution_phases"
+      ],
+      "properties": {
+        "format_version": { "type": "string" },
+        "goal": { "type": "string" },
+        "objective": { "type": "string" },
+        "metadata": { "type": "object" },
+        "context_policy": { "type": "object" },
+        "evidence_policy": { "type": "object" },
+        "action_policy": {
+          "type": "object",
+          "description": "The action governance the auditor enforces (A1-A3).",
+          "required": ["allowed", "approval_required", "denied"],
+          "properties": {
+            "allowed": { "type": "array", "items": { "type": "string" } },
+            "approval_required": { "type": "array", "items": { "type": "string" } },
+            "denied": { "type": "array", "items": { "type": "string" } }
+          }
+        },
+        "model_directives": { "type": "array", "items": { "type": "string" } },
+        "verification_policy": { "type": "object" },
+        "uncertainty_policy": { "type": "object" },
+        "calibration": { "type": "object" },
+        "output_schema": { "type": "object" },
+        "risk_profile": { "type": "object" },
+        "trace_policy": { "type": "object" },
+        "prompt_plan": { "type": "object" },
+        "execution_phases": {
+          "type": "array",
+          "items": { "type": "string" },
+          "description": "The canonical phase order embedded in the plan (trace.CANONICAL_PHASES)."
+        }
+      }
+    },
+    "pipeline": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name", "stages"],
+      "properties": {
+        "name": { "type": "string" },
+        "stages": { "type": "array", "items": { "type": "string" } }
+      }
+    }
+  }
+}

@@ -77,7 +77,7 @@ def test_compile_prints_json(capsys) -> None:
     assert main(["compile", TRIAGE]) == 0
     document = json.loads(capsys.readouterr().out)
     assert document["goals"][0]["goal"] == "TriageGitHubIssue"
-    assert document["plan_version"] == "0.2"
+    assert document["format_version"] == "0.2"
     assert document["source_hash"]
 
 
@@ -236,6 +236,68 @@ def test_run_sign_and_audit_roundtrip(tmp_path, monkeypatch) -> None:
     assert main(["audit", TRIAGE, str(artifact)]) == 0
 
 
+# -- unified witness envelope (issue #108) -------------------------------------
+
+MULTIGOAL = "examples/incident_pipeline.iflow"
+
+
+def test_trace_out_writes_the_canonical_envelope(tmp_path) -> None:
+    out = tmp_path / "witness.json"
+    assert main(["run", TRIAGE, "--simulate", "--trace-out", str(out)]) == 0
+    envelope = json.loads(out.read_text())
+    # Same shape as a --trace-dir artifact: an intentflow-trace envelope with
+    # provenance and the run result under "result".
+    assert envelope["artifact"] == "intentflow-trace"
+    assert envelope["plan_hash"] and envelope["source_hash"] and envelope["trace_id"]
+    assert envelope["result"]["goal"] == "TriageGitHubIssue"
+
+
+def test_trace_out_and_trace_dir_produce_the_same_shape(tmp_path) -> None:
+    out = tmp_path / "witness.json"
+    trace_dir = tmp_path / "traces"
+    main(["run", TRIAGE, "--simulate", "--trace-out", str(out)])
+    main(["run", TRIAGE, "--simulate", "--trace-dir", str(trace_dir)])
+    from_out = json.loads(out.read_text())
+    from_dir = json.loads(next(trace_dir.glob("*.json")).read_text())
+    assert from_out.keys() == from_dir.keys()
+    assert from_out["artifact"] == from_dir["artifact"] == "intentflow-trace"
+
+
+def test_trace_out_audit_roundtrip(tmp_path) -> None:
+    out = tmp_path / "witness.json"
+    assert main(["run", TRIAGE, "--simulate", "--trace-out", str(out)]) == 0
+    # A --trace-out witness audits with no shape heuristics — same path as
+    # a --trace-dir one.
+    assert main(["audit", TRIAGE, str(out)]) == 0
+
+
+def test_multi_goal_trace_out_errors_with_guidance(tmp_path, capsys) -> None:
+    out = tmp_path / "witness.json"
+    rc = main(["run", MULTIGOAL, "--simulate", "--trace-out", str(out)])
+    assert rc != 0
+    err = capsys.readouterr().err
+    assert "--trace-dir" in err and "--goal" in err
+    assert not out.exists()
+
+
+def test_multi_goal_trace_out_with_goal_flag_writes_one_witness(tmp_path) -> None:
+    out = tmp_path / "witness.json"
+    assert main(
+        ["run", MULTIGOAL, "--simulate", "--goal", "DiagnoseIncident", "--trace-out", str(out)]
+    ) == 0
+    envelope = json.loads(out.read_text())
+    assert envelope["result"]["goal"] == "DiagnoseIncident"
+    assert main(["audit", MULTIGOAL, str(out)]) == 0
+
+
+def test_audit_rejects_a_non_envelope_file(tmp_path, capsys) -> None:
+    bare = tmp_path / "bare.json"
+    bare.write_text(json.dumps({"goal": "X", "status": "completed", "trace": []}))
+    rc = main(["audit", TRIAGE, str(bare)])
+    assert rc == 2
+    assert "witness envelope" in capsys.readouterr().err
+
+
 # -- explain / inspect / format -------------------------------------------------
 
 
@@ -301,3 +363,97 @@ def test_triage_example_runs_and_audits() -> None:
     assert result["status"] == "completed"
     report = audit_document(document, result)
     assert report["conformant"] is True
+
+
+# -- trace signing key rotation (issue #80) ------------------------------------
+
+
+def test_cli_key_id_seal_and_audit_with_key_set(tmp_path, monkeypatch) -> None:
+    monkeypatch.setenv("IFLOW_TRACE_KEY", "rot-secret")
+    monkeypatch.setenv("IFLOW_TRACE_KEY_ID", "prod1")
+    out = tmp_path / "witness.json"
+    assert main(["run", TRIAGE, "--simulate", "--sign-trace", "--trace-out", str(out)]) == 0
+    envelope = json.loads(out.read_text())
+    sig = envelope["result"]["trace_chain"]["signatures"][0]
+    assert sig["key_id"] == "prod1"
+
+    # Audit with a rotation set (old + new keys) verifies the key-id'd seal.
+    monkeypatch.delenv("IFLOW_TRACE_KEY", raising=False)
+    monkeypatch.delenv("IFLOW_TRACE_KEY_ID", raising=False)
+    monkeypatch.setenv("IFLOW_TRACE_KEYS", "prod2=new-secret,prod1=rot-secret")
+    assert main(["audit", TRIAGE, str(out)]) == 0
+
+
+def test_cli_audit_unknown_key_id_is_nonconformant(tmp_path, monkeypatch) -> None:
+    monkeypatch.setenv("IFLOW_TRACE_KEY", "rot-secret")
+    monkeypatch.setenv("IFLOW_TRACE_KEY_ID", "prod1")
+    out = tmp_path / "witness.json"
+    assert main(["run", TRIAGE, "--simulate", "--sign-trace", "--trace-out", str(out)]) == 0
+    monkeypatch.delenv("IFLOW_TRACE_KEY", raising=False)
+    monkeypatch.delenv("IFLOW_TRACE_KEY_ID", raising=False)
+    monkeypatch.setenv("IFLOW_TRACE_KEYS", "prod2=other-secret")
+    assert main(["audit", TRIAGE, str(out)]) == 1
+
+
+# -- Ed25519 public-key signing (issue #81) ------------------------------------
+
+
+def test_cli_ed25519_sign_and_audit_with_public_key(tmp_path, monkeypatch) -> None:
+    crypto = pytest.importorskip("cryptography")
+    from cryptography.hazmat.primitives import serialization
+    from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
+
+    priv = Ed25519PrivateKey.generate()
+    priv_path = tmp_path / "ed.pem"
+    pub_path = tmp_path / "ed.pub"
+    priv_path.write_bytes(
+        priv.private_bytes(
+            serialization.Encoding.PEM,
+            serialization.PrivateFormat.PKCS8,
+            serialization.NoEncryption(),
+        )
+    )
+    pub_path.write_bytes(
+        priv.public_key().public_bytes(
+            serialization.Encoding.PEM,
+            serialization.PublicFormat.SubjectPublicKeyInfo,
+        )
+    )
+    out = tmp_path / "witness.json"
+    monkeypatch.setenv("IFLOW_TRACE_SIGNING_KEY", str(priv_path))
+    monkeypatch.setenv("IFLOW_TRACE_KEY_ID", "ed-2026")
+    assert main(["run", TRIAGE, "--simulate", "--sign-trace", "--trace-out", str(out)]) == 0
+    envelope = json.loads(out.read_text())
+    assert [s["algo"] for s in envelope["result"]["trace_chain"]["signatures"]] == ["ed25519"]
+
+    # Verify with ONLY the public key — no secret in the environment.
+    monkeypatch.delenv("IFLOW_TRACE_SIGNING_KEY", raising=False)
+    monkeypatch.delenv("IFLOW_TRACE_KEY_ID", raising=False)
+    monkeypatch.setenv("IFLOW_TRACE_PUBLIC_KEY", str(pub_path))
+    assert main(["audit", TRIAGE, str(out)]) == 0
+
+
+# -- streamed trace (issue #82) ------------------------------------------------
+
+
+def test_cli_trace_stream_writes_jsonl_and_audits_complete(tmp_path, capsys) -> None:
+    stream = tmp_path / "trace.jsonl"
+    assert main(["run", TRIAGE, "--simulate", "--trace-stream", str(stream)]) == 0
+    lines = [ln for ln in stream.read_text().splitlines() if ln.strip()]
+    assert len(lines) > 1
+    assert all(json.loads(ln)["hash"] for ln in lines)
+    # audit auto-detects the JSONL stream and reports a complete, verified chain.
+    capsys.readouterr()
+    assert main(["audit", TRIAGE, str(stream)]) == 0
+    assert "STREAM: COMPLETE" in capsys.readouterr().out
+
+
+def test_cli_audit_detects_truncated_stream_as_prefix(tmp_path, capsys) -> None:
+    stream = tmp_path / "trace.jsonl"
+    main(["run", TRIAGE, "--simulate", "--trace-stream", str(stream)])
+    lines = [ln for ln in stream.read_text().splitlines() if ln.strip()]
+    truncated = tmp_path / "partial.jsonl"
+    truncated.write_text("\n".join(lines[:4]) + "\n")
+    capsys.readouterr()
+    assert main(["audit", TRIAGE, str(truncated)]) == 0
+    assert "VALID PREFIX" in capsys.readouterr().out

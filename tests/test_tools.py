@@ -8,7 +8,8 @@ import pytest
 
 from intentflow.compiler import compile_goal
 from intentflow.parser import parse_file
-from intentflow.runtime import GoalRuntime, Trace
+from intentflow.runtime import GoalRuntime
+from intentflow.trace import Trace
 from intentflow.tools import ActionDenied, ActionGate, ToolRegistry
 
 ACTIONS = {

@@ -7,7 +7,8 @@ import pytest
 
 from intentflow.compiler import compile_goal
 from intentflow.parser import parse_source
-from intentflow.runtime import GoalRuntime, Trace
+from intentflow.runtime import GoalRuntime
+from intentflow.trace import Trace
 from intentflow.tools import (
     ApprovalDecision,
     ApprovalError,

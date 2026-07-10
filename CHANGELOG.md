@@ -7,6 +7,56 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 ## [Unreleased]
 
 ### Added
+- **`intentflow/trace.py`**: trace primitives (`Trace`, `link_hash`,
+  `GENESIS_HASH`, `CANONICAL_PHASES`) extracted into a dedicated module, plus a
+  shared event vocabulary (`Event` constants and the `KNOWN_EVENTS` set). The
+  auditor now depends on this module instead of importing chain primitives from
+  the runtime it verifies. `Trace`, `link_hash`, `GENESIS_HASH`,
+  `CANONICAL_PHASES`, `Event`, and `KNOWN_EVENTS` are exported from the package
+  root.
+
+- **Hashed-domain enforcement**: `trace.assert_json_native` rejects any trace
+  `detail` that is not composed of JSON-native types, enforced in `Trace.record`
+  so the canonical hash form can never silently depend on CPython's `str()`
+  coercion. Documented in `docs/adr/0001-canonical-json-hashing.md`.
+- **Format-version compatibility**: the auditor now verifies the plan and
+  result declare a `format_version` it supports (`auditor.SUPPORTED_PLAN_FORMATS`
+  / `SUPPORTED_TRACE_FORMATS`), emitting a `P2` violation on a mismatch instead
+  of auditing an unknown shape. Run results carry a `format_version`
+  (`trace.TRACE_FORMAT_VERSION`). Policy documented in `docs/formats.md`.
+- **Published JSON Schemas** (`schemas/plan.schema.json`,
+  `schemas/result.schema.json`, JSON Schema draft 2020-12) for the two contract
+  artifacts, linked from the README and `docs/formats.md`. Every bundled
+  example's plan, goal result, and pipeline result is validated against them in
+  the test suite. `jsonschema` added as a **dev-only** dependency; the runtime
+  core stays dependency-free.
+- **Trace-seal key ids and rotation**: `Trace(sign_key=, key_id=)` tags an HMAC
+  seal with a key id; the auditor verifies key-id'd seals against a key set
+  (`IFLOW_TRACE_KEYS="id=secret,…"` at audit time, `IFLOW_TRACE_KEY_ID` at
+  sign time), so rotating the signing key keeps old witnesses verifiable.
+  Unknown-key-id and invalid-signature are distinct violations; key material is
+  never logged. Procedure in `docs/trace-signing.md`.
+- **Ed25519 public-key trace signatures**: new `intentflow.signing` module
+  (`sign_root`, `verify_root`, `Ed25519Signer`) behind the optional `sign`
+  extra (`pip install "intentflow[sign]"`, which adds `cryptography`). A run
+  signed with a private key (`--sign-trace` + `IFLOW_TRACE_SIGNING_KEY`) is
+  verifiable by any third party with only the **public** key
+  (`IFLOW_TRACE_PUBLIC_KEY`) — no shared secret. HMAC and Ed25519 seals compose
+  (dual-signing). The core import path stays free of `cryptography` (lazy,
+  function-scoped import), verified by test.
+- **Streamed JSONL trace sink**: `intentflow run --trace-stream PATH` (API:
+  `trace_sink=`) appends each event to a JSONL file as it is recorded and
+  flushes, so a hard crash leaves a chain-verifiable prefix and long runs need
+  not hold the whole trace in memory. Writing fails closed
+  (`trace.TraceSinkError`). `auditor.verify_trace_stream` and `intentflow audit`
+  (auto-detecting a JSONL stream) chain-verify a stream and distinguish a
+  complete run from a valid-but-truncated prefix.
+- **Signature-required audit** (`intentflow audit --require-signed`, auditor
+  `require_signed=`): rejects a witness that carries no signature verifying
+  against the supplied keys — a stripped or absent seal — as a `T3`. Closes the
+  downgrade path where a forger recomputes the bare chain and drops the seal's
+  `signatures` list; the bare chain is integrity, sealing is authenticity.
+  Opt-in, so the default (sealing is optional) is unchanged.
 - **Reliability primitives** (`intentflow/reliability.py`): `HTTPTimeout` and a
   bounded, fail-closed `RetryPolicy` with deterministic exponential backoff,
   shared by real cognition backends and the LLM judge. Configurable via
@@ -22,6 +72,26 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   without network access or SDKs. (#44)
 
 ### Changed
+- Trace event names are now defined once as `trace.Event` constants and shared
+  by the runtime, the action gate, and the auditor (previously duplicated string
+  literals across three modules). Hash output is unchanged.
+- **`trace_id` derivation**: now `sha256(plan_digest + trace_chain_root)` instead
+  of re-serializing the whole `{plan, trace}` document. The chain root already
+  commits to every trace event, so the id no longer scales with trace length
+  (3.8–5.9× faster on the benchmark). Determinism and audit semantics are
+  unchanged; the id values themselves differ from prior releases.
+- **Breaking (plan shape)**: the plan/document version field is renamed
+  `plan_version` → `format_version` (constant `PLAN_VERSION` → `PLAN_FORMAT_VERSION`)
+  so both contract artifacts use one uniform, independently-versioned field name.
+- **Breaking (witness shape)**: `--trace-out` now writes the same canonical
+  witness envelope as `--trace-dir` (`{artifact, …, result}`) instead of a bare
+  result, and a multi-goal `--trace-out` run errors with guidance (use
+  `--trace-dir` or `--goal`) instead of writing an unauditable JSON list.
+  `audit` and `replay` now require the envelope and no longer sniff shapes;
+  `build_witness_envelope` is the single source for both flags.
+- **Breaking (seal shape)**: the trace seal now carries a `signatures` list
+  (`[{algo, signature, key_id?}]`) instead of a single flat `signature` field,
+  so HMAC and (new) Ed25519 signatures coexist and HMAC seals can be key-id'd.
 - `try_parse_json` now recovers a balanced JSON object embedded in surrounding
   prose, reducing spurious parse failures on real model replies. (#35)
 - Code-fence stripping matches a whole ` ```json ` fence with a regex instead of
@@ -29,6 +99,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - The LLM judge fails **closed** on an unparseable reply (records a failing
   verdict instead of raising), and retries transient chat failures. (#35, #73)
 
+### Documented
+- `docs/adr/0001-canonical-json-hashing.md`: adopts RFC 8785 (JCS) as the target
+  canonical form for the (now enforced) JSON-native hashed domain, and defers
+  the byte-format migration to a version-gated follow-up. Hash bytes are
+  unchanged in this release.
+- `docs/trace-scaling-investigation.md` + `scripts/bench_trace.py`: measured
+  trace memory (~1.6 KB/event, linear) and trace-id hashing cost, motivating the
+  chain-root `trace_id` derivation and the streaming sink.
 ### Fixed
 - The embedding API (`IntentFlowProgram.run`/`run_pipeline`) now threads its
   `cassette` argument to the judge as it already does for the backend, so a

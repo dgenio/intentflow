@@ -6,7 +6,7 @@ from __future__ import annotations
 import pytest
 
 from intentflow.compiler import (
-    PLAN_VERSION,
+    PLAN_FORMAT_VERSION,
     CompileError,
     classify_verification,
     compile_goal,
@@ -17,7 +17,7 @@ from intentflow.compiler import (
 from intentflow.parser import parse_file, parse_source
 
 PLAN_KEYS = {
-    "plan_version",
+    "format_version",
     "goal",
     "objective",
     "metadata",
@@ -44,7 +44,7 @@ def triage_plan() -> dict:
 
 def test_plan_has_expected_shape(triage_plan: dict) -> None:
     assert set(triage_plan) == PLAN_KEYS
-    assert triage_plan["plan_version"] == PLAN_VERSION
+    assert triage_plan["format_version"] == PLAN_FORMAT_VERSION
     assert triage_plan["goal"] == "TriageGitHubIssue"
     assert "triage" in triage_plan["objective"]
     assert triage_plan["trace_policy"]["enabled"] is True
@@ -53,7 +53,7 @@ def test_plan_has_expected_shape(triage_plan: dict) -> None:
 def test_document_has_versioning_and_source_hash() -> None:
     program = parse_file("examples/opensource_triage.iflow")
     document = compile_program(program)
-    assert document["plan_version"] == PLAN_VERSION
+    assert document["format_version"] == PLAN_FORMAT_VERSION
     assert document["intentflow_version"]
     assert len(document["source_hash"]) == 64
     assert document["source"].endswith("opensource_triage.iflow")

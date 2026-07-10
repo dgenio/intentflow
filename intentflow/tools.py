@@ -19,6 +19,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable, Protocol
 
+from intentflow.trace import Event
+
 
 class ActionDenied(Exception):
     """Raised when an action is forbidden by policy or lacks approval."""
@@ -178,7 +180,7 @@ class ActionGate:
         ):
             reason = "denied by policy" if action in self._denied else "not in allowed list"
             self._trace.record(
-                "actions", "action_blocked", {"action": action, "reason": reason}
+                "actions", Event.ACTION_BLOCKED, {"action": action, "reason": reason}
             )
             raise ActionDenied(action, reason)
         if action in self._gated:
@@ -186,7 +188,7 @@ class ActionGate:
             if not decision.approved:
                 self._trace.record(
                     "actions",
-                    "approval_denied",
+                    Event.APPROVAL_DENIED,
                     {
                         "action": action,
                         "via": decision.via,
@@ -199,14 +201,14 @@ class ActionGate:
                 )
             self._trace.record(
                 "actions",
-                "approval_granted",
+                Event.APPROVAL_GRANTED,
                 {"action": action, "via": decision.via, "note": decision.note},
             )
-        self._trace.record("actions", "tool_invoked", {"action": action, "args": list(args)})
+        self._trace.record("actions", Event.TOOL_INVOKED, {"action": action, "args": list(args)})
         result = handler(*args)
         self._trace.record(
             "actions",
-            "tool_completed",
+            Event.TOOL_COMPLETED,
             {"action": action, "result_chars": len(result)},
         )
         return result

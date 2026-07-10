@@ -306,3 +306,25 @@ def test_runtime_is_deterministic() -> None:
     first = _run(TRIAGE)
     second = _run(TRIAGE)
     assert first == second
+
+
+def test_trace_id_matches_plan_digest_and_chain_root(triage_result: dict) -> None:
+    # trace_id is now derived from the plan digest + the trace chain root
+    # (issue #47), not a re-serialization of the whole {plan, trace} document.
+    import hashlib
+    import json
+
+    plan = _plan(TRIAGE)
+    root = triage_result["trace_chain"]["root"]
+    plan_digest = hashlib.sha256(
+        json.dumps(plan, sort_keys=True, default=str).encode("utf-8")
+    ).hexdigest()
+    expected = hashlib.sha256(f"{plan_digest}{root}".encode("utf-8")).hexdigest()[:16]
+    assert triage_result["trace_id"] == expected
+
+
+def test_trace_id_changes_when_the_trace_changes() -> None:
+    # A different program produces a different trace root, hence a different id.
+    a = _run(TRIAGE)
+    b = _run("examples/production_diagnosis.iflow", workspace="examples/workspace")
+    assert a["trace_id"] != b["trace_id"]

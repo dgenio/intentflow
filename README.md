@@ -190,11 +190,20 @@ replays them deterministically in CI with no keys.
 
 ## Traces, replay, audit
 
-`--trace-dir` writes a self-contained artifact per run: trace id,
-timestamp, source path + hash, plan hash, backend, status, all 13 phases,
-diagnostics, messages, evidence, the backend response, parsed output,
-verification results, uncertainty decisions, action-gate decisions, and the
-hash-chained event log (optionally HMAC-signed with `--sign-trace`).
+`--trace-dir DIR` (one file per result) and `--trace-out FILE` (one explicit
+path) both write the **same** self-contained witness envelope: trace id,
+timestamp, source path + hash, plan hash, backend, status, and the run result —
+all 13 phases, diagnostics, messages, evidence, the backend response, parsed
+output, verification results, uncertainty decisions, action-gate decisions, and
+the hash-chained event log (optionally HMAC-signed with `--sign-trace`). A
+multi-goal run has no single witness for `--trace-out`, so use `--trace-dir` or
+`--goal NAME` to select one.
+
+For long or crash-prone runs, `--trace-stream FILE` appends each event to a
+JSONL file as it happens (flushed per event), so a hard kill still leaves a
+prefix that verifies from genesis; `intentflow audit SOURCE stream.jsonl`
+auto-detects the stream and reports whether it is a complete run or a valid
+prefix.
 
 ```bash
 intentflow replay traces/TriageGitHubIssue-*.json   # the run as a story
@@ -205,7 +214,12 @@ intentflow audit  examples/opensource_triage.iflow traces/TriageGitHubIssue-*.js
 the backend, or the model — that no denied action ran, every gated action
 had a prior approval, every citation points at collected evidence, no
 verification failure was hidden, the status is consistent with the trace,
-and the trace chain is intact.
+the trace chain is intact, and the plan/result declare a format version the
+auditor supports.
+
+The two artifacts — the execution plan and the run result/trace — are an open,
+versioned format. Their JSON Schemas live under [`schemas/`](schemas/) and the
+versioning policy is documented in [`docs/formats.md`](docs/formats.md).
 
 ## Use from Python
 

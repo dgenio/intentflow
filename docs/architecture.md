@@ -138,7 +138,9 @@ Governance is **not** pluggable. It lives outside the backend:
 
 The core package is intentionally stdlib-only. `pyproject.toml` keeps
 `project.dependencies = []`; provider SDKs, test tools, and future adapters
-must live behind optional extras such as `dev`, `llm`, and `openai`.
+must live behind optional extras such as `dev`, `llm`, `openai`, and `sign`
+(Ed25519 signing via `cryptography`, imported lazily inside
+`intentflow.signing` so the core import path never pulls it in).
 
 The import rule is strict:
 
@@ -201,12 +203,23 @@ Three mechanisms keep the runtime honest beyond the plan:
   carries the judge's name and a rationale, and the verification result keeps
   ``machine`` and ``judged`` tallies apart so a proof is never confused with a
   model's opinion. Without a judge, judged rules are recorded as *skipped*.
-- **Hash-chained traces** (`runtime.Trace`). Each event stores
-  ``sha256(prev_hash || canonical(event))``; the auditor recomputes the chain
-  from genesis, catching accidental corruption, truncation, or reordering with
-  no plan required. The links live in the trace, so the bare chain is integrity,
-  not authenticity — a forger could recompute it. ``--sign-trace`` HMAC-seals
-  the root out of band, so a key holder can *detect* (not prevent) edits.
+- **Hash-chained traces** (`trace.Trace`). The trace primitives — the chain,
+  the canonical phase order, and the event vocabulary (`trace.Event`) — live in
+  `trace.py`, the project's third contract artifact alongside source and plan.
+  Each event stores ``sha256(prev_hash || canonical(event))``; the auditor
+  recomputes the chain from genesis, catching accidental corruption, truncation,
+  or reordering with no plan required, and depends only on `trace.py` — never on
+  the runtime it verifies. The links live in the trace, so the bare chain is
+  integrity, not authenticity — a forger could recompute it. ``--sign-trace``
+  seals the root out of band: an HMAC signature (shared secret, optionally
+  key-id'd for rotation) lets a key holder *detect* edits, and an Ed25519
+  signature (optional ``sign`` extra) lets any third party verify the witness
+  with only the public key — no shared secret. Seals live in a ``signatures``
+  list, so HMAC and Ed25519 can coexist. Key management and rotation:
+  ``docs/trace-signing.md``. An opt-in ``--trace-stream`` sink appends each
+  event to a JSONL file as it is recorded (flushed per event, fail-closed), so
+  a hard crash leaves a chain-verifiable *prefix* — the chain makes even a
+  truncated stream provably correct up to truncation.
 
 ### Embedding (`api.py`)
 
