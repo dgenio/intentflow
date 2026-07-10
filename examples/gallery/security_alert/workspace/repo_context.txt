@@ -1,0 +1,1 @@
+svc_batch is used by the nightly ETL job; not expected to make outbound calls.

@@ -1,0 +1,49 @@
+# Change-management review: decide whether a production change is safe to ship
+# now, ship with approval, or hold for a human.
+#
+# Routing/escalation policy (see docs routing section, #146): a low-risk change
+# with a rollback path can proceed; a change touching a production boundary is
+# approval-gated; low confidence or a security risk escalates to a human.
+goal ReviewProductionChange {
+  meta:
+    description "governed review of a proposed production change"
+
+  objective:
+    decide whether a proposed production change is safe to ship
+
+  context:
+    max_tokens 8000
+    prefer diff
+
+  evidence:
+    require diff
+    require config
+    optional related_issues
+    distrust unreviewed_claims
+
+  model:
+    weigh blast radius against the rollback path
+    separate observation from inference
+
+  actions:
+    allow read_diff
+    allow inspect_code
+    allow search_repo
+    require_approval deploy_change
+    deny delete_database
+
+  verify:
+    require cites_evidence
+    check confidence >= 0.6
+    proposed change must include rollback path
+
+  uncertainty:
+    if confidence < 0.6 ask_human
+    if security_risk ask_human
+
+  output:
+    decision: string
+    confidence: number
+    rollback_plan: markdown
+    risk: string
+}

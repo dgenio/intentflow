@@ -1,0 +1,2 @@
+12 failed logins for user=svc_batch from 3 IPs in 40s, then one success.
+Followed by an outbound connection to an unrecognized host.

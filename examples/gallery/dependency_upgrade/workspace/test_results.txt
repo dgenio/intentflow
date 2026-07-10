@@ -1,0 +1,2 @@
+suite: 812 passed, 0 failed on 3.1.4
+compatibility probe against 4.0.0: 6 middleware call sites need migration

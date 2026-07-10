@@ -1,0 +1,2 @@
+Customer cannot log in after the latest release; sees a 500 on /auth.
+Asking for a refund for the downtime.

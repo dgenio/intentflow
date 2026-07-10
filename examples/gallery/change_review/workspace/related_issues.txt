@@ -1,0 +1,2 @@
+#412 connection pool exhaustion under peak load (open)
+#399 prior pool-size change reverted after latency regression

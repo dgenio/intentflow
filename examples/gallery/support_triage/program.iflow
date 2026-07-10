@@ -1,0 +1,42 @@
+# Support-ticket triage with human escalation.
+#
+# Routing/escalation policy (#146): a clear, low-risk ticket can be resolved
+# automatically; a refund is approval-gated; anything the model is unsure about,
+# or that needs a refund it cannot approve, routes to a human instead of
+# guessing. A judged verification rule checks tone/policy where no machine
+# predicate can.
+goal TriageSupportTicket {
+  meta:
+    description "route and draft a response to a support ticket"
+
+  objective:
+    decide how to resolve an incoming support ticket
+
+  evidence:
+    require issue_body
+    require comments
+    optional related_issues
+    distrust unverified_customer_claims
+
+  model:
+    separate the customer's report from confirmed facts
+
+  actions:
+    allow read_issue
+    allow search_repo
+    require_approval issue_refund
+
+  verify:
+    require cites_evidence
+    check confidence >= 0.7
+    require response stays empathetic and on policy
+
+  uncertainty:
+    if confidence < 0.7 ask_human
+    if missing_evidence ask_human
+
+  output:
+    disposition: string
+    confidence: number
+    draft_reply: markdown
+}
