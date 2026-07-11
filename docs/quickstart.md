@@ -71,24 +71,25 @@ trace of every phase the run went through.
 ## 5. Audit the witness (conformant)
 
 ```bash
-intentflow audit result.json
+intentflow audit triage.iflow result.json
 ```
 
 You'll see a `CONFORMANT` verdict — the run stayed inside its contract.
 
-## 6. Tamper with the trace, then audit again (caught)
+## 6. Tamper with the witness, then audit again (caught)
 
-Edit one field of the saved trace and re-audit:
+Forge the result — claim a citation to evidence that was never collected — and
+re-audit:
 
 ```bash
 python -c "import json; d=json.load(open('result.json')); \
-d['result']['confidence']=0.99; json.dump(d, open('result.json','w'))"
-intentflow audit result.json
+d['result']['citations']=['E99']; json.dump(d, open('result.json','w'))"
+intentflow audit triage.iflow result.json
 ```
 
-Now the audit reports `NONCONFORMANT` with the specific violation: the hash
-chain no longer matches the edited content. You did not have to trust the
-runtime — the witness proves what actually happened.
+Now the audit reports `NONCONFORMANT` with the specific violation (`E1`: the
+result cites evidence that was never collected). You did not have to trust the
+runtime — the witness is checked against the contract.
 
 ## Where to go next
 

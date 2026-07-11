@@ -27,5 +27,5 @@ changelog, a compatibility probe, and the current test baseline.
 ```bash
 intentflow run examples/gallery/dependency_upgrade/program.iflow \
     --workspace examples/gallery/dependency_upgrade/workspace --trace-dir traces
-intentflow audit traces/<latest>.json
+intentflow audit examples/gallery/dependency_upgrade/program.iflow traces/<latest>.json
 ```

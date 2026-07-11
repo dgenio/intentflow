@@ -31,5 +31,5 @@ stage builds on the first stage's output as evidence.
 intentflow run examples/gallery/security_alert/program.iflow \
     --pipeline SecurityAlertResponse \
     --workspace examples/gallery/security_alert/workspace --trace-dir traces
-intentflow audit traces/<latest>.json
+intentflow audit examples/gallery/security_alert/program.iflow traces/<latest>.json
 ```

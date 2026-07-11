@@ -28,5 +28,5 @@ and gates any refund on approval.
 intentflow run examples/gallery/support_triage/program.iflow \
     --workspace examples/gallery/support_triage/workspace \
     --judge simulate --trace-dir traces
-intentflow audit traces/<latest>.json
+intentflow audit examples/gallery/support_triage/program.iflow traces/<latest>.json
 ```

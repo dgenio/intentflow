@@ -1,0 +1,60 @@
+site_name: IntentFlow
+site_description: An experimental language for governed LLM workflows.
+site_url: https://dgenio.github.io/intentflow/
+repo_url: https://github.com/dgenio/intentflow
+repo_name: dgenio/intentflow
+edit_uri: edit/main/docs/
+
+theme:
+  name: material
+  features:
+    - navigation.sections
+    - navigation.top
+    - content.code.copy
+  palette:
+    - scheme: default
+      toggle:
+        icon: material/weather-night
+        name: Switch to dark mode
+    - scheme: slate
+      toggle:
+        icon: material/weather-sunny
+        name: Switch to light mode
+
+nav:
+  - Home: index.md
+  - Quickstart: quickstart.md
+  - Language:
+      - Language reference: language-reference.md
+      - Language specification: language_spec.md
+      - Concepts: concepts.md
+  - Architecture:
+      - Architecture: architecture.md
+      - Design principles: design_principles.md
+      - Formats: formats.md
+      - ADR 0001 — Canonical JSON hashing: adr/0001-canonical-json-hashing.md
+      - ADR 0002 — Minimal grammar & deterministic simulator: adr/0002-minimal-grammar-and-deterministic-simulator.md
+      - Trace-scaling investigation: trace-scaling-investigation.md
+  - Using it:
+      - Embedding: embedding.md
+      - Backends: backends.md
+      - CLI conventions: cli-conventions.md
+      - Examples: examples.md
+  - Security:
+      - Threat model: threat-model.md
+      - Trace signing: trace-signing.md
+      - API stability: api-stability.md
+  - Demos:
+      - Tamper-evidence: tamper-demo.md
+  - Ecosystem — where IntentFlow fits: ecosystem.md
+  - Community:
+      - Community: community.md
+      - Labels: labels.md
+      - Maintainer setup: maintainer-setup.md
+      - Roadmap: roadmap.md
+
+markdown_extensions:
+  - admonition
+  - pymdownx.superfences
+  - toc:
+      permalink: true

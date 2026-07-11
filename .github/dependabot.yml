@@ -1,0 +1,22 @@
+version: 2
+updates:
+  # Keep GitHub Actions used by our workflows current.
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    groups:
+      actions:
+        patterns:
+          - "*"
+
+  # Keep the optional extras (llm/openai/sign/docs/audit) and dev tooling fresh.
+  # The runtime core has no dependencies, so this only tracks extras + tooling.
+  - package-ecosystem: "pip"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    groups:
+      python-dependencies:
+        patterns:
+          - "*"

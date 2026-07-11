@@ -10,7 +10,7 @@ Run any of them:
 ```bash
 intentflow run examples/gallery/<name>/program.iflow \
     --workspace examples/gallery/<name>/workspace --trace-dir traces --verbose
-intentflow audit traces/<latest>.json
+intentflow audit examples/gallery/<name>/program.iflow traces/<latest>.json
 ```
 
 | Example | Domain | Audience | Shows |

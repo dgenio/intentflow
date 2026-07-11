@@ -27,5 +27,5 @@ for how routing policy is *declared*, not prompted.
 ```bash
 intentflow run examples/gallery/change_review/program.iflow \
     --workspace examples/gallery/change_review/workspace --trace-dir traces
-intentflow audit traces/<latest>.json
+intentflow audit examples/gallery/change_review/program.iflow traces/<latest>.json
 ```

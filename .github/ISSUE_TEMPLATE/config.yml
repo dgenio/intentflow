@@ -1,0 +1,11 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Questions & "how would I model X?"
+    url: https://github.com/dgenio/intentflow/discussions
+    about: Ask questions and share governed programs in Discussions. Issues are for confirmed defects and scoped work.
+  - name: Show and tell — your governed programs
+    url: https://github.com/dgenio/intentflow/discussions/categories/show-and-tell
+    about: Built something with IntentFlow? Share your .iflow programs here.
+  - name: Security disclosures
+    url: https://github.com/dgenio/intentflow/security/advisories/new
+    about: Report vulnerabilities privately (see SECURITY.md). Do not open a public issue.
