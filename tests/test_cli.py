@@ -61,6 +61,23 @@ def test_lint_strict_fails_on_warnings(capsys) -> None:
     assert main(["lint", "examples/research_synthesis.iflow", "--strict"]) == 1
 
 
+def test_lint_json_emits_machine_readable_report(capsys) -> None:
+    assert main(["lint", "examples/research_synthesis.iflow", "--json"]) == 0
+    report = json.loads(capsys.readouterr().out)
+    assert report["source"].endswith("research_synthesis.iflow")
+    assert "warning_count" in report and "info_count" in report
+    codes = {d["code"] for d in report["diagnostics"]}
+    assert "IFLOW009" in codes
+
+
+def test_lint_json_strict_exits_1_on_warnings(capsys) -> None:
+    assert (
+        main(["lint", "examples/research_synthesis.iflow", "--json", "--strict"]) == 1
+    )
+    report = json.loads(capsys.readouterr().out)
+    assert report["warning_count"] >= 1
+
+
 def test_parse_error_exits_2(tmp_path, capsys) -> None:
     bad = tmp_path / "bad.iflow"
     bad.write_text("not a goal\n")

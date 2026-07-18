@@ -1,0 +1,5 @@
+--- a/service/config.py
++++ b/service/config.py
+@@
+-CONNECTION_POOL_SIZE = 10
++CONNECTION_POOL_SIZE = 50

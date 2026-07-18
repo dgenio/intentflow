@@ -1,0 +1,45 @@
+# Dependency-upgrade risk assessment.
+#
+# A major-version bump is exactly where "looks fine" and "is safe" diverge. The
+# goal weighs the changelog and a compatibility probe against the test baseline,
+# and holds for a human when the migration surface is non-trivial.
+goal AssessDependencyUpgrade {
+  meta:
+    description "assess the risk of a proposed dependency upgrade"
+
+  objective:
+    assess whether a proposed dependency upgrade is safe to adopt
+
+  context:
+    max_tokens 8000
+    prefer test_results
+
+  evidence:
+    require config
+    require recent_commits
+    require test_results
+    distrust vendor_marketing
+
+  model:
+    weigh breaking changes against the migration effort
+
+  actions:
+    allow inspect_code
+    allow read_diff
+    require_approval merge_upgrade
+
+  verify:
+    require cites_evidence
+    check confidence >= 0.7
+    recommendation must include migration steps
+
+  uncertainty:
+    if confidence < 0.7 ask_human
+    if competing_hypotheses run_discriminating_test
+
+  output:
+    recommendation: string
+    confidence: number
+    breaking_changes: list[string]
+    migration_steps: markdown
+}

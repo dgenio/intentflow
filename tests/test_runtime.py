@@ -233,6 +233,24 @@ def test_evidence_is_collected_for_required_and_optional(triage_result: dict) ->
     assert all(e["id"].startswith("E") for e in triage_result["evidence"])
 
 
+def test_collected_evidence_carries_a_content_digest(triage_result: dict) -> None:
+    # Evidence is untrusted input; each collected item records a sha256 of the
+    # exact content the model was shown, so an auditor can confirm it (see #29).
+    import hashlib
+
+    for item in triage_result["evidence"]:
+        assert item["summary"] is not None
+        expected = "sha256:" + hashlib.sha256(
+            item["summary"].encode("utf-8")
+        ).hexdigest()
+        assert item["content_digest"] == expected
+    # The digest is also witnessed in the trace's evidence_collected events.
+    collected = [
+        e for e in triage_result["trace"] if e["event"] == "evidence_collected"
+    ]
+    assert collected and all("content_digest" in e["detail"] for e in collected)
+
+
 def test_blocked_evidence_sets_missing_evidence_signal() -> None:
     # The goal requires logs but does not allow read_logs: with a workspace
     # in play the gate blocks the tool and the goal does NOT get the data.

@@ -21,14 +21,32 @@ execution plan (JSON) -> runtime (13-phase machine) -> traced result ->
 replay / audit
 ```
 
+![Run a goal, save the witness, hand-edit the trace, and watch `intentflow audit` catch it — offline and deterministic.](docs/assets/demo.svg)
+
+**New here?** [Get started in 5 minutes](docs/quickstart.md) — install to an
+audited run, ending by tampering with a trace and watching the auditor catch it.
+Reproduce the demo above on a fresh clone with no key:
+
+```bash
+pip install intentflow
+intentflow run examples/opensource_triage.iflow --simulate --trace-out result.json
+intentflow audit examples/opensource_triage.iflow result.json   # CONFORMANT
+python -c "import json; d=json.load(open('result.json')); d['result']['citations']=['E99']; json.dump(d, open('result.json','w'))"
+intentflow audit examples/opensource_triage.iflow result.json   # NONCONFORMANT (E1: phantom citation)
+```
+
 ## Install
 
 ```bash
 pip install -e .            # core: zero runtime dependencies
-pip install -e ".[dev]"     # + pytest
+pip install -e ".[dev]"     # + pytest, jsonschema, cryptography
 pip install -e ".[openai]"  # + OpenAI-compatible backend
 pip install -e ".[llm]"     # + Anthropic backend
+pip install -e ".[docs]"    # + MkDocs (build the docs site)
 ```
+
+Or run it in a container without touching your Python — see
+[Run in Docker](#run-in-docker).
 
 ## Quickstart
 
@@ -282,6 +300,29 @@ Five programs ship with the repo — see [`docs/examples.md`](docs/examples.md):
 * [`high_risk_deploy.iflow`](examples/high_risk_deploy.iflow) — intentionally `blocked` by policy.
 * [`incident_pipeline.iflow`](examples/incident_pipeline.iflow) — two goals composed with a statically checked evidence chain.
 
+For domain examples with narrated governance choices — change review, support
+triage, dependency-upgrade risk, and a security-alert pipeline — see the
+[example gallery](examples/gallery). Two of them (`change_review`,
+`support_triage`) double as **model-routing / human-escalation policy**
+examples: declared policy with a replayable decision path.
+
+The [tamper-evidence demo](docs/tamper-demo.md)
+([`examples/tamper_demo.py`](examples/tamper_demo.py)) forges a witness four ways
+and shows the auditor catching each.
+
+## Documentation
+
+Full docs (also published as a [site](docs/index.md) via MkDocs):
+
+- [Quickstart](docs/quickstart.md) — 5 minutes, offline.
+- [Language reference](docs/language-reference.md) — every section, statement, and diagnostic.
+- [Concepts & glossary](docs/concepts.md) — contract, witness, envelope, trust tiers.
+- [Embedding](docs/embedding.md) — drive it from Python.
+- [Backends](docs/backends.md) — OpenAI / Azure / vLLM / Ollama / Anthropic + cassettes.
+- [Threat model](docs/threat-model.md) & [security policy](SECURITY.md).
+- [API stability](docs/api-stability.md) · [CLI conventions](docs/cli-conventions.md).
+- [Where IntentFlow fits](docs/ecosystem.md) — alongside orchestration, guardrails, policy engines.
+
 ## Honest status & current limitations
 
 This is an experimental but working language. Known limits (also in the
@@ -303,6 +344,7 @@ For the architecture model and design notes, see
 ```text
 intentflow/
   iflow_ast.py    syntactic AST + typed cognitive IR (JSON-serializable)
+  _grammar.py     shared line-based grammar (parser + formatter)
   parser.py       .iflow -> AST (line/column errors, strings, comments)
   analyzer.py     static analyzer: coded diagnostics IFLOW001-022
   actions.py      action registry: side-effect/risk metadata + heuristics
@@ -316,9 +358,9 @@ intentflow/
   formatter.py    canonical, idempotent, comment-preserving formatter
   api.py          Python embedding (load / run / register_tool)
   cli.py          parse|validate|lint|compile|inspect|explain|format|run|replay|audit
-examples/         six programs + a real evidence workspace
-tests/            ~230 tests; no network, no API keys
-docs/             language spec, design principles, examples, roadmap
+examples/         six programs + a real evidence workspace; gallery/ + tamper_demo.py
+tests/            no network, no API keys
+docs/             quickstart, language reference, concepts, architecture, ADRs
 ```
 
 ## Citing IntentFlow
@@ -337,6 +379,26 @@ version you used. For example:
 }
 ```
 
+## Run in Docker
+
+```bash
+docker build -t intentflow .
+docker run --rm intentflow run examples/opensource_triage.iflow --simulate
+```
+
+The image bakes in the package and examples; the demo path needs no network or
+keys. A [`.devcontainer`](.devcontainer/devcontainer.json) is included for
+Codespaces / VS Code.
+
+## Community
+
+- **Questions & "how would I model X?"** → [Discussions](https://github.com/dgenio/intentflow/discussions)
+  (see [`docs/community.md`](docs/community.md)).
+- **Contributing** → [`CONTRIBUTING.md`](CONTRIBUTING.md) — dev setup, the design
+  invariants, and how to pick a [good first issue](https://github.com/dgenio/intentflow/labels/good%20first%20issue).
+- **Conduct** → [`CODE_OF_CONDUCT.md`](CODE_OF_CONDUCT.md).
+- **Security** → report privately, see [`SECURITY.md`](SECURITY.md).
+
 ## License
 
-MIT.
+[MIT](LICENSE).

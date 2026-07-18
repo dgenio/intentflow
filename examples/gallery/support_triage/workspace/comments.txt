@@ -1,0 +1,2 @@
+Support: reproduced on the customer's account; auth service returns 500.
+Billing: account is on the enterprise plan; refund requires approval.

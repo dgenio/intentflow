@@ -109,9 +109,20 @@ def cmd_lint(args: argparse.Namespace) -> int:
     diagnostics = [
         d for d in analyze_program(program) if d.severity in ("warning", "info")
     ]
+    warnings = [d for d in diagnostics if d.severity == "warning"]
+
+    if getattr(args, "json", False):
+        report = {
+            "source": program.source_name,
+            "warning_count": len(warnings),
+            "info_count": len(diagnostics) - len(warnings),
+            "diagnostics": [d.to_dict() for d in diagnostics],
+        }
+        print(json.dumps(report, indent=2))
+        return 1 if (warnings and args.strict) else 0
+
     for diag in diagnostics:
         print(diag.render(program.source_name))
-    warnings = [d for d in diagnostics if d.severity == "warning"]
     print(f"lint: {len(warnings)} warning(s), {len(diagnostics) - len(warnings)} info")
     if warnings and args.strict:
         return 1
@@ -713,6 +724,9 @@ def build_parser() -> argparse.ArgumentParser:
     )
     p_lint.add_argument("file")
     p_lint.add_argument("--strict", action="store_true", help="exit 1 on warnings")
+    p_lint.add_argument(
+        "--json", action="store_true", help="emit machine-readable JSON diagnostics"
+    )
     p_lint.set_defaults(func=cmd_lint)
 
     p_compile = sub.add_parser("compile", help="compile a .iflow file to an execution plan")
@@ -722,69 +736,80 @@ def build_parser() -> argparse.ArgumentParser:
 
     p_run = sub.add_parser("run", help="execute a .iflow file")
     p_run.add_argument("file")
-    p_run.add_argument(
+    # Flags are organized into argument groups (help rendering only; parsing is
+    # unchanged) per the surface budget in docs/cli-conventions.md.
+    g_backend = p_run.add_argument_group("backend")
+    g_backend.add_argument(
         "--simulate",
         action="store_true",
         help="alias for --backend simulate (deterministic mocked cognition)",
     )
-    p_run.add_argument(
+    g_backend.add_argument(
         "--backend",
         default="simulate",
         choices=sorted(BACKENDS) + ["replay"],
         help="cognition backend (default: simulate; 'replay' needs --cassette)",
     )
-    p_run.add_argument("--goal", help="run a single named goal")
-    p_run.add_argument(
+    g_backend.add_argument(
+        "--cassette",
+        help="replay recorded model responses from this file (with --backend replay)",
+    )
+    g_backend.add_argument(
+        "--record-cassette",
+        help="record a real backend's model responses to this file for later replay",
+    )
+
+    g_target = p_run.add_argument_group("target selection")
+    g_target.add_argument("--goal", help="run a single named goal")
+    g_target.add_argument(
         "--pipeline", help="run a named pipeline instead of standalone goals"
     )
-    p_run.add_argument(
+    g_target.add_argument(
         "--workspace",
         help="directory of real evidence files; collection goes through the action gate",
     )
-    p_run.add_argument(
+
+    g_approvals = p_run.add_argument_group("approvals")
+    g_approvals.add_argument(
         "--approve",
         action="append",
         metavar="ACTION",
         help="pre-grant human approval for an approval-gated action (repeatable)",
     )
-    p_run.add_argument(
+    g_approvals.add_argument(
         "--approve-interactive",
         action="store_true",
         help="block and prompt on the terminal for each approval-gated action",
     )
-    p_run.add_argument(
+    g_approvals.add_argument(
         "--approve-webhook",
         metavar="URL",
         help="request approval for gated actions from a synchronous webhook",
     )
-    p_run.add_argument(
+
+    g_judging = p_run.add_argument_group("judging")
+    g_judging.add_argument(
         "--judge",
         choices=["simulate", "openai", "anthropic", "replay"],
         help="run an LLM judge on 'judged' verification rules (separate tier); "
         "'replay' answers from --cassette",
     )
-    p_run.add_argument(
-        "--cassette",
-        help="replay recorded model responses from this file (with --backend replay)",
-    )
-    p_run.add_argument(
-        "--record-cassette",
-        help="record a real backend's model responses to this file for later replay",
-    )
-    p_run.add_argument(
+
+    g_trace = p_run.add_argument_group("trace output")
+    g_trace.add_argument(
         "--sign-trace",
         action="store_true",
         help="seal the trace chain: HMAC via IFLOW_TRACE_KEY (+IFLOW_TRACE_KEY_ID) "
         "and/or Ed25519 via IFLOW_TRACE_SIGNING_KEY (see docs/trace-signing.md)",
     )
-    p_run.add_argument(
+    g_trace.add_argument(
         "--trace-dir",
         help="write a timestamped, self-contained trace artifact per run to this dir",
     )
-    p_run.add_argument(
+    g_trace.add_argument(
         "--trace-out", help="write the full witness envelope (with trace) to a JSON file"
     )
-    p_run.add_argument(
+    g_trace.add_argument(
         "--trace-stream",
         help="append each trace event to this JSONL file as it is recorded "
         "(crash-safe prefix; verify with 'intentflow audit --stream')",

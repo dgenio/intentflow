@@ -1,0 +1,76 @@
+# Security-alert triage as a governed pipeline: first classify the alert, then
+# recommend a response. Composition (a pipeline) lets the recommendation build
+# on the triage stage's output as evidence, and keeps each stage's governance
+# explicit and separately auditable.
+goal TriageSecurityAlert {
+  meta:
+    description "classify a security alert from logs and account context"
+
+  objective:
+    classify whether a security alert is a likely true positive
+
+  evidence:
+    require logs
+    require config
+    optional repo_context
+    distrust attacker_controlled_input
+
+  model:
+    separate observed events from inferred intent
+
+  actions:
+    allow read_logs
+    allow inspect_code
+    allow search_repo
+
+  verify:
+    require cites_evidence
+    check confidence >= 0.6
+
+  uncertainty:
+    if confidence < 0.6 ask_human
+    if security_risk ask_human
+
+  output:
+    classification: string
+    confidence: number
+    indicators: list[string]
+}
+
+goal RecommendAlertResponse {
+  meta:
+    description "recommend a containment response for a triaged alert"
+
+  objective:
+    recommend a containment response proportional to the alert
+
+  evidence:
+    require repo_context
+    distrust attacker_controlled_input
+
+  model:
+    prefer reversible containment first
+
+  actions:
+    allow search_repo
+    require_approval disable_account
+    deny wipe_host
+
+  verify:
+    require cites_evidence
+    response must include a rollback path
+
+  uncertainty:
+    if confidence < 0.7 ask_human
+    if security_risk ask_human
+
+  output:
+    response_plan: markdown
+    confidence: number
+    requires_approval: boolean
+}
+
+pipeline SecurityAlertResponse {
+  stage TriageSecurityAlert
+  stage RecommendAlertResponse
+}

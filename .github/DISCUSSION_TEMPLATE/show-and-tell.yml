@@ -1,0 +1,30 @@
+title: "[Show and tell] "
+labels: []
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Share a governed program you built with IntentFlow. Others learn the
+        language best by reading real `.iflow` files — thanks for posting one.
+  - type: textarea
+    id: program
+    attributes:
+      label: Your .iflow program
+      description: Paste the goal(s) or pipeline. Redact anything sensitive.
+      render: text
+    validations:
+      required: true
+  - type: input
+    id: domain
+    attributes:
+      label: What does it govern?
+      description: One line — the task and why governance matters here.
+    validations:
+      required: true
+  - type: textarea
+    id: notes
+    attributes:
+      label: Notes (optional)
+      description: Interesting governance choices, a trace excerpt, or what you'd improve.
+    validations:
+      required: false

@@ -25,8 +25,8 @@ import re
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from intentflow._grammar import GOAL_RE, PIPELINE_RE, SECTION_RE, STAGE_RE
 from intentflow.iflow_ast import SECTION_NAMES
-from intentflow.parser import _GOAL_RE, _PIPELINE_RE, _SECTION_RE, _STAGE_RE
 
 _INDENT = "  "
 _OUTPUT_FIELD_SPACING_RE = re.compile(r"^([A-Za-z_][A-Za-z0-9_]*)\s*:\s*(\S+)(\s*#.*)?$")
@@ -121,13 +121,13 @@ def _parse_blocks(text: str) -> tuple[list[_Block], list[str]]:
             pending_comments.append(stripped)
             continue
         if current is None:
-            match = _GOAL_RE.match(stripped)
+            match = GOAL_RE.match(stripped)
             if match:
                 current = _Block("goal", match.group(1), comments=pending_comments)
                 pending_comments = []
                 current_section = None
                 continue
-            match = _PIPELINE_RE.match(stripped)
+            match = PIPELINE_RE.match(stripped)
             if match:
                 current = _Block("pipeline", match.group(1), comments=pending_comments)
                 pending_comments = []
@@ -150,7 +150,7 @@ def _parse_blocks(text: str) -> tuple[list[_Block], list[str]]:
             current.items.append(_Item(comments=pending_comments, text=stripped))
             pending_comments = []
             continue
-        section_match = _SECTION_RE.match(stripped)
+        section_match = SECTION_RE.match(stripped)
         if section_match and section_match.group(1) in SECTION_NAMES:
             current_section = _SectionBlock(
                 section_match.group(1), comments=pending_comments
@@ -204,7 +204,7 @@ def _emit_pipeline(block: _Block, out: list[str]) -> None:
     for item in block.items:
         for comment in item.comments:
             out.append(_INDENT + comment)
-        stage = _STAGE_RE.match(item.text)
+        stage = STAGE_RE.match(item.text)
         out.append(_INDENT + (f"stage {stage.group(1)}" if stage else _collapse_spaces(item.text)))
     for comment in block.trailing_comments:
         out.append(_INDENT + comment)
