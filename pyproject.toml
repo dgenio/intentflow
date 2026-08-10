@@ -16,6 +16,11 @@ classifiers = [
     "Intended Audience :: Developers",
     "License :: OSI Approved :: MIT License",
     "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Programming Language :: Python :: 3.14",
     "Topic :: Software Development :: Compilers",
     "Typing :: Typed",
 ]
@@ -31,7 +36,12 @@ Changelog = "https://github.com/dgenio/intentflow/blob/main/CHANGELOG.md"
 intentflow = "intentflow.cli:main"
 
 [project.optional-dependencies]
-dev = ["pytest>=7", "jsonschema>=4.18", "cryptography>=42"]
+dev = [
+    "pytest>=7",
+    "jsonschema>=4.18",
+    "cryptography>=42",
+    "tomli>=2; python_version<'3.11'",
+]
 llm = ["anthropic>=0.40"]
 openai = ["openai>=1.40"]
 sign = ["cryptography>=42"]
