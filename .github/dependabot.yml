@@ -1,6 +1,5 @@
 version: 2
 updates:
-  # Keep workflow Actions current without bundling unrelated breaking majors.
   - package-ecosystem: "github-actions"
     directory: "/"
     schedule:
@@ -28,9 +27,9 @@ updates:
     commit-message:
       prefix: "chore(ci)"
 
-  # The runtime core intentionally has no dependencies. This tracks only the
-  # optional extras and dev tooling declared in pyproject.toml; routine
-  # compatible changes are grouped, while breaking majors remain separate.
+  # Core is dependency-free and functional extras are published compatibility
+  # contracts. Normal releases are exercised in CI; only security fixes may
+  # trigger automatic manifest changes.
   - package-ecosystem: "pip"
     directory: "/"
     schedule:
@@ -38,25 +37,13 @@ updates:
       day: monday
       time: "06:00"
       timezone: Etc/UTC
-    open-pull-requests-limit: 5
-    cooldown:
-      default-days: 7
+    open-pull-requests-limit: 0
     groups:
-      python-nonmajor:
-        applies-to: version-updates
-        patterns:
-          - "*"
-        update-types:
-          - minor
-          - patch
-      python-security-nonmajor:
+      python-security:
         applies-to: security-updates
         patterns:
           - "*"
-        update-types:
-          - minor
-          - patch
     labels:
       - dependencies
     commit-message:
-      prefix: "chore(deps)"
+      prefix: "fix(deps)"
