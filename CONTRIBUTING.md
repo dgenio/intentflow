@@ -9,14 +9,26 @@ contract reviewers hold PRs to.
 ```bash
 git clone https://github.com/dgenio/intentflow
 cd intentflow
-pip install -e ".[dev]"
+python -m pip install --upgrade pip
+python -m pip install -e . --group dev
 python -m pytest
 ```
 
-The runtime core has **zero third-party dependencies**; provider SDKs, signing,
-schema validation, docs, and audit tooling are optional extras
-(`.[llm]`, `.[openai]`, `.[sign]`, `.[docs]`, `.[audit]`). `.[dev]` pulls in
-`pytest`, `jsonschema`, and `cryptography` so the whole suite runs.
+The runtime core has **zero third-party dependencies**. Published functional
+extras are only capabilities downstream users may intentionally install:
+`intentflow[llm]` (Anthropic), `intentflow[openai]`, and `intentflow[sign]`.
+Maintainer-only test, documentation, and supply-chain tooling lives in PEP 735
+dependency groups instead of wheel optional-dependency metadata:
+
+```bash
+python -m pip install -e . --group dev     # tests / schema validation / signing tests
+python -m pip install -e . --group docs    # MkDocs site tooling
+python -m pip install -e . --group audit   # pip-audit / CycloneDX tooling
+```
+
+Empty legacy `dev`, `docs`, and `audit` extras remain temporarily as harmless
+source-install compatibility shims; new contributor documentation and CI must
+use the dependency groups above.
 
 ## Design invariants (read before changing runtime code)
 
