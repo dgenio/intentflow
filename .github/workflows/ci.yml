@@ -29,7 +29,7 @@ jobs:
       - name: Install test toolchain
         run: |
           python -m pip install --upgrade pip
-          pip install -e ".[dev]"
+          python -m pip install -e . --group dev
       - name: Test
         # Existing tests intentionally import examples.* from the repository
         # checkout. `python -m pytest` puts the checkout root on sys.path;
