@@ -128,7 +128,9 @@ def test_cli_missing_approval_blocks_gated_tool_and_records_denial(
         ]
     ) == 0
     result = _result_json(capsys.readouterr().out)
-    assert result["evidence"][0]["origin"] == "simulated"
+    # A denied approval must not synthesize or leak evidence. The denial itself
+    # is the auditable fact and is recorded in the trace below.
+    assert result["evidence"] == []
     assert any(
         event["event"] == "approval_denied"
         and event["detail"]["action"] == "read_logs"
