@@ -27,7 +27,10 @@ jobs:
           python -m pip install --upgrade pip
           pip install -e ".[dev]"
       - name: Test
-        run: pytest -q
+        # Existing tests intentionally import examples.* from the repository
+        # checkout. `python -m pytest` puts the checkout root on sys.path;
+        # invoking the installed pytest console script does not guarantee that.
+        run: python -m pytest -q
 
   bare-install:
     name: Dependency-free core install
