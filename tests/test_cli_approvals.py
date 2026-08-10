@@ -83,8 +83,8 @@ def _approval_goal(tmp_path: Path) -> Path:
 
 
 def _result_json(out: str) -> dict:
-    body = out.split("=== final result ===", 1)[1].split("--- summary ---", 1)[0]
-    return json.loads(body)
+    """Parse the CLI's explicit machine-readable run surface."""
+    return json.loads(out)
 
 
 def test_cli_pregrant_allows_approval_gated_evidence_tool(
@@ -100,6 +100,7 @@ def test_cli_pregrant_allows_approval_gated_evidence_tool(
             "examples/workspace",
             "--approve",
             "read_logs",
+            "--json",
         ]
     ) == 0
     result = _result_json(capsys.readouterr().out)
@@ -123,6 +124,7 @@ def test_cli_missing_approval_blocks_gated_tool_and_records_denial(
             "--simulate",
             "--workspace",
             "examples/workspace",
+            "--json",
         ]
     ) == 0
     result = _result_json(capsys.readouterr().out)
