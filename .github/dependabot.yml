@@ -1,22 +1,62 @@
 version: 2
 updates:
-  # Keep GitHub Actions used by our workflows current.
+  # Keep workflow Actions current without bundling unrelated breaking majors.
   - package-ecosystem: "github-actions"
     directory: "/"
     schedule:
       interval: "weekly"
+      day: monday
+      time: "06:00"
+      timezone: Etc/UTC
+    open-pull-requests-limit: 5
+    cooldown:
+      default-days: 7
     groups:
-      actions:
+      actions-nonmajor:
+        applies-to: version-updates
         patterns:
           - "*"
+        update-types:
+          - minor
+          - patch
+      actions-security:
+        applies-to: security-updates
+        patterns:
+          - "*"
+    labels:
+      - dependencies
+    commit-message:
+      prefix: "chore(ci)"
 
-  # Keep the optional extras (llm/openai/sign/docs/audit) and dev tooling fresh.
-  # The runtime core has no dependencies, so this only tracks extras + tooling.
+  # The runtime core intentionally has no dependencies. This tracks only the
+  # optional extras and dev tooling declared in pyproject.toml; routine
+  # compatible changes are grouped, while breaking majors remain separate.
   - package-ecosystem: "pip"
     directory: "/"
     schedule:
       interval: "weekly"
+      day: monday
+      time: "06:00"
+      timezone: Etc/UTC
+    open-pull-requests-limit: 5
+    cooldown:
+      default-days: 7
     groups:
-      python-dependencies:
+      python-nonmajor:
+        applies-to: version-updates
         patterns:
           - "*"
+        update-types:
+          - minor
+          - patch
+      python-security-nonmajor:
+        applies-to: security-updates
+        patterns:
+          - "*"
+        update-types:
+          - minor
+          - patch
+    labels:
+      - dependencies
+    commit-message:
+      prefix: "chore(deps)"
