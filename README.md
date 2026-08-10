@@ -37,13 +37,23 @@ intentflow audit examples/opensource_triage.iflow result.json   # NONCONFORMANT 
 
 ## Install
 
+Install the published package from PyPI. The core has zero runtime dependencies:
+
 ```bash
-pip install -e .            # core: zero runtime dependencies
-pip install -e ".[dev]"     # + pytest, jsonschema, cryptography
-pip install -e ".[openai]"  # + OpenAI-compatible backend
-pip install -e ".[llm]"     # + Anthropic backend
-pip install -e ".[docs]"    # + MkDocs (build the docs site)
+pip install intentflow
 ```
+
+Install only the user-facing capability you need:
+
+```bash
+pip install "intentflow[openai]"  # OpenAI-compatible backend
+pip install "intentflow[llm]"     # Anthropic backend
+pip install "intentflow[sign]"    # signed traces / verification support
+```
+
+Editable installs, tests, docs tooling, and supply-chain audit tooling are
+maintainer workflows and live in [CONTRIBUTING.md](CONTRIBUTING.md), not in the
+public install path.
 
 Or run it in a container without touching your Python — see
 [Run in Docker](#run-in-docker).
