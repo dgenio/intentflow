@@ -2,8 +2,8 @@ name: security-audit
 
 # Standalone supply-chain scan (#79). Deliberately scoped to vulnerability
 # auditing only — the test matrix / lint / format / type checks are owned by a
-# separate CI workflow (#22). This runs pip-audit over the installed extras so a
-# known-vulnerable dependency in an optional SDK is surfaced early.
+# separate CI workflow (#22). This runs pip-audit over the installed functional
+# extras so a known-vulnerable optional provider/signing dependency is surfaced.
 
 on:
   push:
@@ -24,10 +24,10 @@ jobs:
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
           python-version: "3.12"
-      - name: Install package with all extras and the audit tool
+      - name: Install package with user extras and audit toolchain
         run: |
           python -m pip install --upgrade pip
-          pip install ".[dev,llm,openai,sign,audit]"
+          python -m pip install ".[llm,openai,sign]" --group audit
       - name: Run pip-audit
         # Advisory mode first (does not fail the build) so we establish a clean
         # baseline before making it blocking. Flip to remove `|| true` once green.
@@ -43,7 +43,7 @@ jobs:
       - name: Generate a CycloneDX SBOM
         run: |
           python -m pip install --upgrade pip
-          pip install ".[audit]"
+          python -m pip install ".[llm,openai,sign]" --group audit
           cyclonedx-py environment --output-format json --outfile sbom.json || \
             cyclonedx-py --help
       - name: Upload SBOM artifact

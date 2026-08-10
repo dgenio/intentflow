@@ -36,17 +36,34 @@ Changelog = "https://github.com/dgenio/intentflow/blob/main/CHANGELOG.md"
 intentflow = "intentflow.cli:main"
 
 [project.optional-dependencies]
+# User-facing capabilities only. Maintainer test/docs/audit tooling lives in
+# PEP 735 dependency groups below and is not part of the published dependency
+# contract.
+llm = ["anthropic>=0.40"]
+openai = ["openai>=1.40"]
+sign = ["cryptography>=42"]
+# Backward-compatible source-install shims. Historical contributor/docs commands
+# may still reference these extras; keep them harmless while new documentation
+# uses PEP 735 groups. They intentionally publish no maintainer dependencies.
+dev = []
+docs = []
+audit = []
+
+[dependency-groups]
 dev = [
     "pytest>=7",
     "jsonschema>=4.18",
     "cryptography>=42",
     "tomli>=2; python_version<'3.11'",
 ]
-llm = ["anthropic>=0.40"]
-openai = ["openai>=1.40"]
-sign = ["cryptography>=42"]
-docs = ["mkdocs>=1.6", "mkdocs-material>=9.5"]
-audit = ["pip-audit>=2.7", "cyclonedx-bom>=4.0"]
+docs = [
+    "mkdocs>=1.6",
+    "mkdocs-material>=9.5",
+]
+audit = [
+    "pip-audit>=2.7",
+    "cyclonedx-bom>=4.0",
+]
 
 [tool.setuptools.packages.find]
 include = ["intentflow*"]

@@ -1,8 +1,9 @@
 """Dependency policy tests for IntentFlow's stdlib-only core.
 
 The guard itself intentionally uses only the standard library plus pytest from
-the dev extra. Runtime dependencies must stay empty; provider SDKs belong
-behind optional extras and lazy imports.
+the dev dependency group. Runtime dependencies must stay empty; user-facing
+provider/signing SDKs belong behind optional extras, while maintainer tooling
+belongs in PEP 735 dependency groups.
 """
 
 from __future__ import annotations
@@ -18,12 +19,24 @@ from intentflow.backends import make_backend
 
 ROOT = Path(__file__).resolve().parents[1]
 STDLIB_MODULES = set(sys.stdlib_module_names) | {"__future__"}
+PUBLIC_FUNCTIONAL_EXTRAS = {"llm", "openai", "sign"}
+LEGACY_EMPTY_EXTRAS = {"dev", "docs", "audit"}
+MAINTAINER_GROUPS = {"dev", "docs", "audit"}
+
+
+def _load_pyproject(pyproject_text: str) -> dict:
+    try:
+        import tomllib
+    except ModuleNotFoundError:  # pragma: no cover - Python 3.10 fallback
+        import tomli as tomllib
+
+    return tomllib.loads(pyproject_text)
 
 
 def _runtime_dependencies(pyproject_text: str) -> list[str]:
     try:
-        import tomllib
-    except ModuleNotFoundError:  # pragma: no cover - Python 3.10 fallback
+        payload = _load_pyproject(pyproject_text)
+    except ModuleNotFoundError:  # pragma: no cover - defensive fallback
         match = re.search(
             r"(?ms)^\[project\]\s*(.*?)(?:^\[|\Z)",
             pyproject_text,
@@ -39,7 +52,6 @@ def _runtime_dependencies(pyproject_text: str) -> list[str]:
             return []
         return [item.strip().strip("\"'") for item in raw.split(",") if item.strip()]
 
-    payload = tomllib.loads(pyproject_text)
     return list(payload["project"].get("dependencies", []))
 
 
@@ -84,6 +96,31 @@ def _third_party_top_level_imports(source: str) -> set[str]:
 def test_core_runtime_dependencies_stay_empty() -> None:
     deps = _runtime_dependencies((ROOT / "pyproject.toml").read_text())
     assert deps == []
+
+
+def test_published_extras_only_expose_user_capabilities() -> None:
+    payload = _load_pyproject((ROOT / "pyproject.toml").read_text())
+    extras = payload["project"].get("optional-dependencies", {})
+    assert set(extras) == PUBLIC_FUNCTIONAL_EXTRAS | LEGACY_EMPTY_EXTRAS
+    assert all(extras[name] for name in PUBLIC_FUNCTIONAL_EXTRAS)
+    assert all(extras[name] == [] for name in LEGACY_EMPTY_EXTRAS)
+
+    groups = payload.get("dependency-groups", {})
+    assert set(groups) == MAINTAINER_GROUPS
+    assert all(groups[name] for name in MAINTAINER_GROUPS)
+
+
+def test_public_install_section_is_registry_first() -> None:
+    readme = (ROOT / "README.md").read_text()
+    install = readme.split("## Install", 1)[1].split("## Quickstart", 1)[0]
+    assert "pip install intentflow" in install
+    assert 'pip install "intentflow[openai]"' in install
+    assert 'pip install "intentflow[llm]"' in install
+    assert 'pip install "intentflow[sign]"' in install
+    assert "pip install -e" not in install
+    assert "intentflow[dev]" not in install
+    assert "intentflow[docs]" not in install
+    assert "intentflow[audit]" not in install
 
 
 def test_intentflow_modules_only_import_stdlib_or_intentflow_at_top_level() -> None:
