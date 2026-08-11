@@ -1,103 +1,103 @@
 # Concepts and glossary
 
-The load-bearing vocabulary IntentFlow uses, defined once here and
-cross-referenced from the rest of the docs. Each term names the module that
-implements it and, where relevant, the auditor check that enforces it.
+This glossary describes the **legacy/experimental v0 reference implementation**. For exact positive claims, assumptions, and non-claims, see [`../CLAIMS.md`](../CLAIMS.md) and [`limitations.md`](limitations.md).
 
-## Program as contract
+## Program as reference-runtime contract
 
-An `.iflow` program is not a script; it is a **contract** for a cognitive task
-— objective, required evidence, the action envelope, verification rules,
-uncertainty handling, and a typed output schema. The compiler
-(`intentflow/compiler.py`) lowers it to an inspectable execution plan (JSON)
-before any model runs. See [`formats.md`](formats.md) for the plan shape.
+An `.iflow` program declares an objective, evidence requirements, action-name policy, verification rules, uncertainty handling, and a typed output schema. The compiler (`intentflow/compiler.py`) lowers it to an inspectable execution plan before a model runs.
 
-## Trace as witness
+Calling the program a **contract** means the v0 compiler/runtime has explicit structured declarations to interpret. It does not mean every declaration is formally verified or that every external action path is completely mediated.
 
-A run emits a **witness**: the structured result plus a hash-chained **trace**
-of every phase (`intentflow/trace.py`, `intentflow/runtime.py`). The witness is
-designed to be checked by someone who did not run it — that is what makes
-"auditable" more than a slogan.
+## Trace as witness record
 
-## Behavior envelope
+A successfully recorded run can emit a structured result plus a hash-chained trace of reference-runtime events (`intentflow/trace.py`, `intentflow/runtime.py`). The record is designed to be replayed and checked offline by the bundled auditor.
 
-The **envelope** is the set of actions a run is authorized to take, fixed by the
-plan's `actions:` policy (allow / deny / require_approval). The **ActionGate**
-(`intentflow/tools.py`) authorizes every side-effecting call against the
-envelope — and crucially, *never reads model output to make that decision*. A
-model cannot widen its own envelope.
+“Witness” in v0 means **inspectable recorded evidence under documented assumptions**, not proof that external evidence was truthful or every external system behaved correctly.
+
+## Action envelope
+
+The reference action envelope is the set of action names declared allowed, denied, or approval-required. The `ActionGate` (`intentflow/tools.py`) checks registered calls routed through it and does not use model output to decide allow/deny.
+
+A model cannot widen the gate's policy through prompt output. However, v0 does not prove complete mediation: application code, credentials, or mutation paths outside the gate remain outside this guarantee.
 
 ## Trust tiers: machine vs judged
 
-Verification runs in two tiers:
+Verification records two distinct kinds of result:
 
-- **Machine-checkable** rules (`cites_evidence`, `check <metric> <op> <n>`,
-  `requires_phrase`) are evaluated deterministically by the runtime.
-- **Judged** rules are delegated to an LLM **judge** (`intentflow/judges.py`), a
-  separate trust tier used only when `--judge` is set. A judged check is never
-  silently passed — an unparseable/failed judgment fails closed.
+- **Machine-evaluated** rules are checked deterministically by implemented runtime predicates.
+- **Judged** rules can be delegated to an LLM judge when configured and remain a separate trust tier.
 
-## Calibration
+A machine-evaluated pass means the implemented predicate passed; it is not automatically proof of semantic correctness or external truth. A judged result is a model opinion, not a deterministic proof.
 
-The simulator adjusts a raw confidence toward a calibrated value before
-threshold checks (`intentflow/runtime.py`), so `if confidence < 0.7 ask_human`
-is evaluated against calibrated confidence, not the model's self-report.
+Without a judge, judged rules are recorded as skipped. Issue #160 tracks the v0 gap where skipped/unevaluable mandatory rules may not force overall verification failure.
+
+## Confidence transformation
+
+The simulator/runtime can apply a deterministic shrinkage mapping to raw confidence before threshold rules. This is useful for reproducible control flow.
+
+The mapping is **not empirical evidence of statistically calibrated probability**. Public wording should call it a confidence transformation/shrinkage map unless a separate calibration study establishes more.
 
 ## Escalation
 
-When an `uncertainty:` condition triggers `ask_human`, the run **escalates**
-rather than fabricating an answer — the terminal status becomes `needs_human`
-and the escalation is recorded in the trace.
+When an `uncertainty:` condition triggers `ask_human`, current v0 records an escalation and resolves the run to `needs_human`; it does not fabricate a human approval response.
 
-## Conformance
+`needs_human` means human review remains required. It does not establish that a human answered, approved, or completed a durable suspend/resume workflow.
 
-A witness is **conformant** if the auditor (`intentflow/auditor.py`) can verify,
-against the plan, that the run stayed inside its contract. The auditor codes:
+## v0 conformance
 
-| Code | Checks |
+A v0 artifact is **conformant** when the bundled auditor's implemented checks accept it under the documented assumptions and supported format versions.
+
+The current check vocabulary includes selected properties such as:
+
+| Code | Bundled check |
 |------|--------|
-| A1 | every invoked action was allowed by the plan |
-| A2 | every approval-gated invocation had a prior grant |
-| A3 | no denied action was ever invoked |
-| T1 | the trace is append-only (sequence strictly increasing from 1) |
-| T2 | phases ran in canonical order |
-| T3 | the hash chain is intact and, when keys are configured, the seal verifies |
-| E1 | every citation points at collected evidence |
-| U1 | every uncertainty rule was evaluated or recorded |
-| V1 | every verification rule was checked; no failed check is reported as pass |
-| S1 | the reported status is consistent with the trace |
-| O1 | produced outputs match the declared output schema |
-| P1 | a plan exists for the goal/stage named in the result |
-| P2 | plan/result format versions are ones this auditor supports |
+| A1 | invoked action names are compatible with the plan |
+| A2 | approval-gated invocations have the required recorded grant |
+| A3 | denied action names are not recorded as invoked |
+| T1/T2 | supported trace sequence/phase ordering properties |
+| T3 | hash-chain and configured signature/seal checks |
+| E1 | citation/evidence consistency |
+| U1 | uncertainty-rule coverage as implemented |
+| V1 | verification-record consistency as implemented |
+| S1 | reported status consistency as implemented |
+| O1 | output/schema consistency |
+| P1/P2 | goal/stage and supported-format-version checks |
 
-(Authoritative list: the module docstring in `intentflow/auditor.py`.)
+The authoritative list is the module documentation/implementation in `intentflow/auditor.py`.
 
-## Integrity vs authenticity
+Conformance does **not** mean the auditor independently proves that the run “stayed inside” every real-world security boundary. The auditor and runtime share v0 formats/design assumptions, and the bundled checker cannot establish complete mediation, external truth, model reasoning correctness, or properties that are not encoded in its checks.
 
-Two distinct guarantees about a witness (see [`trace-signing.md`](trace-signing.md)):
+## Integrity vs authenticity vs truth
 
-- **Integrity** — the hash chain proves the trace was not edited after the fact.
-  It holds with no keys at all: any change breaks a link.
-- **Authenticity** — an optional **seal** (HMAC or Ed25519 **signature**) proves
-  *who* produced it. `audit --require-signed` rejects an unsigned witness so a
-  forger cannot simply drop the seal.
+These are separate concepts:
 
-Integrity without authenticity still catches tampering; authenticity adds "and
-it came from the expected signer."
+- **Hash-chain integrity** — edits that do not recompute the chain break the recorded links.
+- **Artifact authenticity** — configured HMAC/Ed25519 verification can authenticate supported sealed bytes to a key identity under cryptographic/key-management assumptions.
+- **External truth/correctness** — whether evidence was true, an API behaved correctly, or the agent's conclusion was semantically right.
+
+A bare unsigned hash chain is not producer authentication; a party able to rewrite the artifact may recompute an unsigned chain. A valid signature authenticates bytes/key identity, not the truth of the signed statement.
+
+See [`trace-signing.md`](trace-signing.md) and [`limitations.md`](limitations.md).
 
 ## Cassette
 
-A **cassette** records a real backend's (and judge's) responses to a file so a
-run can be **replayed** deterministically later — in CI, with no API key. See
-`--cassette` / `--record-cassette` and [`backends.md`](backends.md).
+A cassette records backend/judge responses so the reference parsing/governance path can be replayed deterministically in CI without API keys. Reproducible replay does not imply that future live-model behavior will be identical.
 
 ## Content digest
 
-Each collected evidence item records a `content_digest` (SHA-256 of the exact
-summary the model was shown), witnessed in the trace, so an auditor can confirm
-*what content the run used* — see [`threat-model.md`](threat-model.md).
+Collected evidence can carry a SHA-256 digest of the exact summary recorded for the model path. The digest helps bind the trace to the recorded content under the reference implementation.
+
+A digest proves neither that the source content was truthful nor that the model interpreted it correctly.
+
+## v0/v1 boundary
+
+v0 terminology must not be silently upgraded into the stronger v1 research claims. v1 is testing whether a portable exact action/approval/receipt/postcondition assurance contract provides material value beyond a strong policy + signed-attestation baseline.
+
+See [`../INCUBATION.md`](../INCUBATION.md) and [`v1-baseline-experiment.md`](v1-baseline-experiment.md).
 
 ## Related
 
-- [`architecture.md`](architecture.md) — how these fit into the pipeline.
-- [`language-reference.md`](language-reference.md) — the syntax that expresses them.
+- [`architecture.md`](architecture.md) — current reference architecture and trust boundaries.
+- [`language-reference.md`](language-reference.md) — v0 syntax.
+- [`../CLAIMS.md`](../CLAIMS.md) — claims-to-evidence matrix.
+- [`limitations.md`](limitations.md) — explicit non-claims and limitations.

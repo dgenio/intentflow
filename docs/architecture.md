@@ -1,4 +1,6 @@
-# IntentFlow architecture
+# IntentFlow v0 architecture
+
+This document describes the **legacy/experimental v0 reference implementation**. Architecture descriptions are bounded by the implemented checks and assumptions in [`../CLAIMS.md`](../CLAIMS.md) and [`limitations.md`](limitations.md). The narrower v1 research programme is described in [`../INCUBATION.md`](../INCUBATION.md).
 
 ## The conceptual stack
 
@@ -12,227 +14,124 @@ Static analyzer                   — coded diagnostics (IFLOW001–022)
 Cognitive IR                      — typed nodes: evidence, actions,
                                     uncertainty, verification, context, output schema
     ↓
-Execution plan (JSON, v0.2)       — the contract between language and runtime;
+Execution plan (JSON, v0.2)       — reference contract between language/runtime;
                                     inspectable before anything runs
     ↓
-Agent runtime                     — 13-phase machine: parse → analyze → compile →
+Reference runtime                 — 13-phase machine: parse → analyze → compile →
                                     prepare_context → collect_evidence →
                                     build_messages → call_backend → parse_output →
                                     verify_output → apply_uncertainty_policy →
                                     enforce_action_policy → finalize → trace
     ↓
-LLM / tool calls                  — simulated by default; real backends behind
-                                    the same governance
+LLM / mediated tool calls         — simulated by default; supported real backends use
+                                    the same reference-runtime path
     ↓
-Verified result + status          — completed | needs_human | blocked |
+Result + explicit status          — completed | needs_human | blocked |
                                     failed_validation | failed_verification |
-                                    backend_error, plus a hash-chained trace
+                                    backend_error, plus optional trace artifacts
 ```
 
-Each layer narrows what the layer below is allowed to do. That is the point:
-by the time a model is invoked, the *envelope* of acceptable behavior has
-already been compiled, validated, and made visible.
+The layers make governance intent explicit and move some controls outside prompt prose. They do **not** prove that every application/external action path is mediated or that external evidence/actions are truthful.
 
 ## Layer notes
 
 ### Source → AST (`parser.py`, `iflow_ast.py`)
 
-The grammar is deliberately line-based and small. A goal is a named block of
-known sections; every statement keeps its line number so that diagnostics in
-every later layer can point back at source. The syntactic AST (`Program`,
-`Goal`, `Section`, `Statement`) stays close to the text.
+The grammar is deliberately line-based and small. A goal is a named block of known sections; every statement keeps its line number so diagnostics in later layers can point back at source. The syntactic AST (`Program`, `Goal`, `Section`, `Statement`) stays close to the text.
 
 ### AST → Cognitive IR (`compiler.py` lowering)
 
-Statements are lowered into typed nodes — `EvidenceRequirement` /
-`EvidencePolicy` (stances: require / optional / prefer / distrust),
-`ActionRule` / `ActionPolicy` (allow / deny / require_approval),
-`UncertaintyRule` (threshold or signal conditions mapped to control-flow
-actions), `VerificationRule` / `VerificationPolicy`, `ContextPolicy`,
-`GoalMetadata`, `RiskProfile`, `PromptPlan`, and a typed `OutputSchema`
-(`OutputField` with base type, optionality, list item types). The analyzer
-(`analyzer.py`) runs between parsing and compilation and is what
-`intentflow validate` reports. This IR is the heart of the project: it is a representation of
-a *cognitive process under governance*, not a prompt string. Anything that
-wants to analyze, optimize, or enforce agent behavior operates here.
+Statements are lowered into typed nodes — `EvidenceRequirement` / `EvidencePolicy` (stances: require / optional / prefer / distrust), `ActionRule` / `ActionPolicy` (allow / deny / require_approval), `UncertaintyRule` (threshold or signal conditions mapped to control-flow actions), `VerificationRule` / `VerificationPolicy`, `ContextPolicy`, `GoalMetadata`, `RiskProfile`, `PromptPlan`, and a typed `OutputSchema` (`OutputField` with base type, optionality, list item types).
+
+The analyzer (`analyzer.py`) runs between parsing and compilation and powers `intentflow validate`. This IR is a representation of the governance declarations understood by the v0 compiler/runtime; it should not be mistaken for a formal model of cognition or proof that every declaration is enforced with the same strength.
 
 ### IR → Execution plan (`compiler.py`)
 
-The plan is plain JSON: normalized objective, evidence by stance, actions by
-governance mode, the verification checklist with stable rule ids and typed
-checks, the uncertainty policy, the output contract, a **risk profile**
-(level + factors derived from the action/verification policy), a trace policy,
-and a *staged* prompt plan. The prompt plan has one inspectable block per
-governance concern — `system`, `objective`, `evidence`, `actions_allowed`,
-`actions_denied`, `verify`, `uncertainty`, `output` — instead of one opaque
-mega-prompt, so *what the model is told about each concern* is diffable
-before any model runs, and a backend assembles those blocks into a concrete
-call (`backends.assemble_messages`).
+The plan is plain JSON: normalized objective, evidence by stance, actions by governance mode, the verification checklist with stable rule ids and typed checks, uncertainty policy, output contract, a derived risk profile, trace policy, and a staged prompt plan.
 
-Typed verification checks come in three machine-checkable flavors —
-`cites_evidence`, `requires_phrase`, and `threshold_check`
-(`check confidence >= 0.7`) — plus `judged` rules that need an LLM judge and
-are recorded as skipped, never silently passed.
+The prompt plan keeps concerns inspectable — `system`, `objective`, `evidence`, `actions_allowed`, `actions_denied`, `verify`, `uncertainty`, `output` — instead of one opaque mega-prompt. This improves reviewability; prompt text itself is not enforcement.
 
-Semantic validation runs before plan emission: missing objectives,
-conflicting action policies, malformed uncertainty rules, and out-of-range
-confidence thresholds are errors; missing evidence or verification sections
-are warnings.
+Verification declarations include implemented machine-check forms such as `cites_evidence`, `requires_phrase`, and `threshold_check`, plus `judged` rules. Judged rules require a judge to be evaluated and otherwise appear as skipped. **Known v0 gap:** #160 tracks that skipped/unevaluable mandatory rules can currently leave the overall checklist marked passed.
+
+Semantic validation runs before plan emission for supported static errors/warnings. Analyzer coverage is intentionally finite; passing validation is not a complete policy/security proof.
 
 ### Plan → Execution (`runtime.py`, `backends.py`, `tools.py`)
 
-The runtime is an explicit 13-phase machine ending in one of six statuses.
-Cognition is a pluggable backend behind one narrow, provider-agnostic
-contract — ``respond(plan, evidence, system, user) -> BackendResponse``
-(raw text, parsed JSON, model name, latency, token usage, finish reason) —
-with several implementations: deterministic simulation (the conformance
-reference; honors the typed output schema, no network, no flakiness), a
-mock backend for tests, a real Claude backend, an OpenAI-compatible backend
-(OpenAI, Azure, or local servers such as vLLM/Ollama via
-`OPENAI_BASE_URL`), and cassette replay. All assemble the same staged
-prompt plan and parse the same strict-JSON reply, so adding a provider is
-one class and none can opt out of governance.
+The runtime is an explicit 13-phase reference machine with six handled statuses. Cognition is a pluggable backend behind `respond(plan, evidence, system, user) -> BackendResponse` (raw text, parsed JSON, model name, latency, token usage, finish reason). Implementations include deterministic simulation, a mock backend, supported real model backends, and cassette replay.
 
-The one place a run leaves the deterministic core is the network call to a
-real model or judge, so that is the one place with explicit reliability
-controls (`reliability.py`): every real request carries an `HTTPTimeout`
-(connect/read), and a bounded `RetryPolicy` wraps the call with deterministic
-exponential backoff. Retries are **fail-closed** — on exhaustion the call
-raises `BackendError` and the run ends in `backend_error`, never a partial
-success. Both backends and the LLM judge share this policy; the provider SDKs'
-own retry loops are disabled so IntentFlow owns the behavior. All knobs are
-environment variables (`INTENTFLOW_HTTP_TIMEOUT`, `INTENTFLOW_MAX_ATTEMPTS`,
-`INTENTFLOW_RETRY_BASE_DELAY`, …) with safe defaults. Parsing is defensive too:
-a JSON object embedded in prose is recovered, and a judge whose reply cannot be
-parsed fails the rule closed rather than crashing the run.
+All supported backends feed the same reference runtime. This prevents a backend implementation from choosing the runtime's ActionGate result, but it does **not** establish complete mediation outside the reference application path.
 
-Governance is **not** pluggable. It lives outside the backend:
+External model/judge calls use explicit timeout/retry controls in `reliability.py`. Exhausted retries become backend errors rather than partial successes. Parsing/judge behavior also contains bounded defensive handling. These are reliability properties of the reference implementation, not formal guarantees about provider services.
 
-1. **The ActionGate is the enforcement point.** Every tool invocation —
-   including evidence collection from a workspace — goes through the gate,
-   which consults the compiled action policy. Denied or unlisted actions
-   raise; approval-gated actions fail closed without a grant; every
-   decision is traced. The gate never reads model output, so the model
-   cannot negotiate with it.
-2. **Confidence is calibrated before rules fire.** Backends report raw
-   confidence; the runtime applies the plan's calibration policy (a
-   shrinkage placeholder today, a learned map later) and uncertainty rules
-   evaluate the calibrated value. Both numbers appear in the trace.
-3. **Verification is typed.** The compiler classifies each rule as
-   machine-checkable (`cites_evidence`, `requires_phrase`) or judged.
-   Machine checks are evaluated against structured state; judged checks are
-   recorded as *skipped* — never silently assumed to pass.
-4. **The trace is append-only and complete.** Every phase, rule
-   evaluation, escalation, gate decision, and check lands in the trace with
-   a sequence number, as an independent snapshot (never a live reference to
-   mutable state).
-5. **Uncertainty actions are control flow.** `ask_human` ends the run in
-   `needs_human`; `block_action` ends it in `blocked`. Signals
-   (`missing_evidence`, `security_risk`, `competing_hypotheses`) are
-   evaluated against real run state; rules without an evaluator are
-   recorded, never silently dropped. A failed machine verification ends the
-   run in `failed_verification` — the runtime cannot report it as success,
-   and the auditor checks for exactly that cover-up (S1).
+Governance behavior lives outside the cognition backend where v0 implements it:
+
+1. **ActionGate mediation.** Registered tool calls made through `ActionGate` are checked against allowed, approval-required, and denied action names. Denied/unlisted actions are blocked before the handler runs. This guarantee applies only to mediated calls; other credentials/SDK/process paths are outside it.
+2. **Confidence transformation.** The runtime applies a deterministic shrinkage mapping before uncertainty thresholds. The raw and transformed values can be recorded. The map is a control-flow transform, **not empirical probabilistic calibration**.
+3. **Verification records.** Implemented predicates evaluate structured run state; judged rules use a separate model-judge tier when configured. A machine-evaluated predicate is evidence about that predicate only, not proof of semantic correctness or external truth. #160 covers mandatory skipped-check completeness.
+4. **Trace recording.** Events successfully recorded by the reference runtime are ordered/hash-linked and snapshot their detail at record time. Process/host/storage failures can still produce incomplete or missing artifacts; avoid calling the trace universally complete.
+5. **Uncertainty control flow.** `ask_human` marks the run `needs_human`; current `main` does not fabricate an approval response. `block_action` marks the run blocked. `needs_human` means unresolved human review is required, not that a human answered.
 
 ### Zero-runtime-dependency core
 
-The core package is intentionally stdlib-only. `pyproject.toml` keeps
-`project.dependencies = []`; provider SDKs, test tools, and future adapters
-must live behind optional extras such as `dev`, `llm`, `openai`, and `sign`
-(Ed25519 signing via `cryptography`, imported lazily inside
-`intentflow.signing` so the core import path never pulls it in).
+The core package is intentionally stdlib-only. `pyproject.toml` keeps base runtime dependencies empty; provider/signing/test tooling lives behind optional extras or maintainer dependency groups.
 
-The import rule is strict:
-
-- modules under `intentflow/` may import the Python standard library and
-  `intentflow.*` at module import time;
-- optional provider SDKs are imported lazily inside backend constructors or
-  call paths and must raise actionable `RuntimeError`s when the extra or
-  credential is missing;
-- tests, examples, and packaging helpers may use dev-only tools, but those
-  imports must not become core runtime imports.
-
-The default answer to adding a core dependency is no. An exception must have
-no reasonable stdlib equivalent, be small enough to review transitively, and
-be justified by a trust or correctness requirement that cannot live behind an
-extra. That exception should update this policy before the dependency lands.
-
-`tests/test_dependency_policy.py` enforces the current contract by checking
-that runtime dependencies stay empty, top-level imports in `intentflow/*.py`
-are stdlib/local only, and `import intentflow` plus the simulated backend
-work without optional extras.
+The import policy is enforced by repository tests. This is a packaging/supply-chain property and does not imply that optional integrations or external services are dependency-free.
 
 ### Composition (`pipeline` blocks)
 
-Goals compose into linear pipelines. A later stage may require
-``GoalName.field`` as evidence; the compiler statically checks that the
-named goal runs earlier and declares that output. At runtime the upstream
-output value is seeded as evidence (origin ``pipeline:GoalName``), and the
-combined trace tags every event with its stage.
+Goals compose into linear pipelines. A later stage may require `GoalName.field` as evidence; the compiler checks supported declaration relationships, and runtime output can be seeded into later-stage evidence.
+
+This is reference workflow composition, not a distributed transaction or formal workflow-correctness guarantee.
 
 ### Execution → Audit (`auditor.py`)
 
-This is the layer that makes the whole stack more than a config schema.
-The program is a **contract**; the trace is a **witness**; the auditor is
-an **independent verifier**. ``intentflow audit`` recompiles the source and
-replays a result against it, checking: no denied action ran (A3), gated
-actions have prior approval grants (A2), only allowed actions ran (A1), the
-trace is append-only and in canonical phase order (T1/T2), the trace hash
-chain is intact and any HMAC signature verifies (T3), citations point at
-collected evidence (E1), every uncertainty rule was evaluated or recorded
-(U1), every verification rule was checked and no failure was hidden from the
-result (V1), the reported status is consistent with the trace — a run that
-escalated or failed verification cannot claim `completed` (S1) — and the
-outputs match the declared schema (O1).
+The bundled auditor is a **v0 consistency/conformance checker**, not an independently developed formal verifier.
 
-Because the auditor needs only the source and the result JSON, conformance
-can be verified without trusting the runtime, the backend, or the model —
-proof-carrying agent behavior, in the spirit of audit logs + seccomp
-profiles for processes.
+It recompiles supported source and checks the invariants implemented in `intentflow/auditor.py`, including selected properties around:
 
-### Trust tiers, gates, and tamper-evidence
+- action allow/deny/approval records;
+- trace order/hash links and configured signatures;
+- citations/evidence relationships;
+- uncertainty-rule/check coverage as implemented;
+- reported status/check consistency;
+- supported format versions;
+- output-schema consistency.
 
-Three mechanisms keep the runtime honest beyond the plan:
+A conformant verdict means those bundled checks accepted the supplied artifacts under their assumptions. Because the auditor and runtime share project formats/design vocabulary, they may share conceptual defects.
 
-- **Approval channels** (`tools.py`). An approval-gated action consults an
-  ``Approver`` — pre-grant, blocking TTY prompt, or synchronous webhook — and
-  blocks until it decides. The decision and its channel are traced; no
-  decision means denied (fail closed).
-- **The judge tier** (`judges.py`). `judged` verification rules can be run by
-  an LLM ``Judge``, but their verdicts live in a **separate tier**: each
-  carries the judge's name and a rationale, and the verification result keeps
-  ``machine`` and ``judged`` tallies apart so a proof is never confused with a
-  model's opinion. Without a judge, judged rules are recorded as *skipped*.
-- **Hash-chained traces** (`trace.Trace`). The trace primitives — the chain,
-  the canonical phase order, and the event vocabulary (`trace.Event`) — live in
-  `trace.py`, the project's third contract artifact alongside source and plan.
-  Each event stores ``sha256(prev_hash || canonical(event))``; the auditor
-  recomputes the chain from genesis, catching accidental corruption, truncation,
-  or reordering with no plan required, and depends only on `trace.py` — never on
-  the runtime it verifies. The links live in the trace, so the bare chain is
-  integrity, not authenticity — a forger could recompute it. ``--sign-trace``
-  seals the root out of band: an HMAC signature (shared secret, optionally
-  key-id'd for rotation) lets a key holder *detect* edits, and an Ed25519
-  signature (optional ``sign`` extra) lets any third party verify the witness
-  with only the public key — no shared secret. Seals live in a ``signatures``
-  list, so HMAC and Ed25519 can coexist. Key management and rotation:
-  ``docs/trace-signing.md``. An opt-in ``--trace-stream`` sink appends each
-  event to a JSONL file as it is recorded (flushed per event, fail-closed), so
-  a hard crash leaves a chain-verifiable *prefix* — the chain makes even a
-  truncated stream provably correct up to truncation.
+The auditor does **not** establish, by itself:
+
+- complete mediation of all external action paths;
+- external API/evidence truth;
+- correctness of LLM reasoning;
+- correctness of GitHub/MCP/provider implementations;
+- exact request-bound authorization beyond the binding implemented by a specific integration;
+- completeness of mandatory verification while #160 remains open.
+
+The v1 programme specifically tests whether a smaller portable action-assurance artifact plus genuinely independent verification adds value beyond a strong policy/signed-attestation baseline.
+
+### Trust tiers, approval, and trace integrity
+
+Three mechanisms are distinct:
+
+- **Approval channels (`tools.py`).** Approval-gated `ActionGate` calls can consult pre-grant, TTY, webhook, or callback approvers. These are implementation-level action approvals. They are not yet a portable proof that approval was bound to every exact argument, tool descriptor, state, receipt, and postcondition.
+- **Judge tier (`judges.py`).** Judged verification can use a model judge with named rationale. It remains an opinion from another model, not a deterministic proof. Without a judge, the v0 rule is skipped; #160 tracks the overall completeness consequence.
+- **Trace integrity/signing (`trace.py`, `signing.py`).** Hash links can detect edits that do not recompute the chain. Unsigned chains provide an integrity structure, not producer authenticity. Configured HMAC/Ed25519 signatures can authenticate supported sealed bytes under their key-management/crypto assumptions. They do not prove the recorded external facts are true.
+
+`--trace-stream` can flush a hash-linked JSONL prefix as events occur. A crash may leave a valid prefix, but a process/host/storage failure can also prevent complete durable recording; a prefix is not a complete-run proof.
 
 ### Embedding (`api.py`)
 
-``intentflow.load(...)`` exposes the whole stack to Python:
-``validate`` / ``compile`` / ``inspect`` / ``run`` / ``run_pipeline``, plus
-``register_tool`` to expose a Python function as a governed action. Registered
-tools still run *through the action gate*, so Python interop never bypasses
-governance. Recorded **cassettes** (`backends.py`) capture a real model's raw
-replies once and replay them deterministically, giving the real
-parsing/governance path CI coverage without credentials.
+`intentflow.load(...)` exposes validation/compile/inspect/run/pipeline and tool-registration APIs to Python. Registered tools routed through the runtime still use the ActionGate. Application code can still create out-of-band paths, so embedding does not make complete mediation automatic.
+
+Recorded cassettes can replay captured model responses for deterministic regression testing. They test the reference parsing/governance path against recorded responses; they are not evidence that future real-model behavior is identical.
+
+## v0/v1 boundary
+
+v0 remains useful as a research/reference implementation for explicit governance declarations, mediated action-name gates, run-state recording, and adversarial lessons.
+
+v1 is not a feature-completion roadmap for v0. It starts by building the strongest policy/request/approval/receipt/signed-attestation baseline, attacking it, and only retaining new portable semantics if a material assurance gap survives. See [`../ROADMAP.md`](../ROADMAP.md) and [`../INCUBATION.md`](../INCUBATION.md).
 
 ## Future directions
 
-Roadmap ownership now lives in [ROADMAP.md](../ROADMAP.md).
-
-This document stays focused on architecture and runtime contracts.
+Roadmap ownership lives in [ROADMAP.md](../ROADMAP.md). This document stays focused on the current reference architecture and its trust boundaries.
