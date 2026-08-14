@@ -43,6 +43,7 @@ nav:
   - Security:
       - Threat model: threat-model.md
       - Trace signing: trace-signing.md
+      - Failure artifacts: failure-artifacts.md
       - API stability: api-stability.md
   - Demos:
       - Tamper-evidence: tamper-demo.md
