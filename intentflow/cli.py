@@ -792,6 +792,7 @@ def build_parser() -> argparse.ArgumentParser:
     p_compile.set_defaults(func=cmd_compile)
 
     p_run = sub.add_parser("run", help="execute a .iflow file")
+    p_run.add_argument("file")
     # Flags are organized into argument groups (help rendering only; parsing is
     # unchanged) per the surface budget in docs/cli-conventions.md.
     g_backend = p_run.add_argument_group("backend")
