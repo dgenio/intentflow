@@ -305,8 +305,9 @@ def cmd_run(args: argparse.Namespace) -> int:
         # The judge shares the run's cassette: replay judges read from
         # --cassette, real judges record to --record-cassette. Their request
         # fingerprints never collide with the backend's.
-        judge_cassette = args.cassette if args.judge == "replay" else args.record_cassette
-        judge = make_judge(args.judge, judge_cassette) if args.judge else None
+        judge_name = args.judge or ("simulate" if backend_name == "simulate" else None)
+        judge_cassette = args.cassette if judge_name == "replay" else args.record_cassette
+        judge = make_judge(judge_name, judge_cassette) if judge_name else None
         seal_kwargs = _sealing_config(args)
     except (ValueError, RuntimeError) as exc:
         print(f"error: {exc}", file=sys.stderr)

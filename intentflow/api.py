@@ -108,6 +108,9 @@ class IntentFlowProgram:
         result. Analyzer errors yield ``status == "failed_validation"``
         instead of raising."""
         registry = self._registry(workspace)
+        resolved_judge: str | Judge | None = judge
+        if resolved_judge is None and backend == "simulate":
+            resolved_judge = "simulate"
         return execute_program(
             self._program,
             goal,
@@ -115,7 +118,7 @@ class IntentFlowProgram:
             printer=printer,
             workspace=None if registry is not None else workspace,
             approver=self._approver(approve, approver),
-            judge=self._judge(judge, cassette),
+            judge=self._judge(resolved_judge, cassette),
             registry=registry,
             sign_key=sign_key,
         )
@@ -136,13 +139,16 @@ class IntentFlowProgram:
         """Compile and run a named pipeline."""
         document = self.compile()
         registry = self._registry(workspace)
+        resolved_judge: str | Judge | None = judge
+        if resolved_judge is None and backend == "simulate":
+            resolved_judge = "simulate"
         return run_pipeline(
             document,
             name,
             backend=self._backend(backend, cassette),
             printer=printer,
             workspace=None if registry is not None else workspace,
-            judge=self._judge(judge, cassette),
+            judge=self._judge(resolved_judge, cassette),
             approver=self._approver(approve, approver),
             registry=registry,
             sign_key=sign_key,
