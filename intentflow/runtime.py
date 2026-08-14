@@ -24,7 +24,7 @@ that makes the process *governed* lives here, outside the model:
 * every event lands in an append-only, hash-chained trace that
   ``intentflow audit`` can later replay against the plan.
 
-A run always ends in exactly one status:
+A normally resolved run ends in exactly one status:
 
 * ``completed``           — output produced, verification passed
 * ``needs_human``         — an uncertainty rule escalated to a human
@@ -32,6 +32,11 @@ A run always ends in exactly one status:
 * ``failed_validation``   — analyzer errors; nothing was executed
 * ``failed_verification`` — output produced but verification failed or was incomplete
 * ``backend_error``       — the backend failed or returned unusable output
+
+An unexpected exception caught after the trace has started raises
+:class:`RunFailed` carrying a partial result with ``status: failed`` and
+``complete: false``. That partial result is diagnostic evidence, not a claim
+that every process/host/storage failure can always leave a durable witness.
 """
 
 from __future__ import annotations
@@ -52,6 +57,15 @@ from intentflow.judges import Judge
 from intentflow.tools import ActionDenied, ActionGate, Approver, ToolError, ToolRegistry
 from intentflow.trace import TRACE_FORMAT_VERSION, Event, Trace
 
+
+class RunFailed(RuntimeError):
+    """A caught runtime failure with the partial, auditable result attached."""
+
+    def __init__(self, message: str, result: dict[str, Any]) -> None:
+        super().__init__(message)
+        self.result = result
+
+
 #: Statuses a run can end in.
 RUN_STATUSES: tuple[str, ...] = (
     "completed",
@@ -60,6 +74,7 @@ RUN_STATUSES: tuple[str, ...] = (
     "failed_validation",
     "failed_verification",
     "backend_error",
+    "failed",
 )
 
 _OPS: dict[str, Callable[[float, float], bool]] = {
@@ -180,6 +195,7 @@ class GoalRuntime:
         self.uncertainty_decisions: list[dict[str, Any]] = []
         self._status_hints: set[str] = set()
         self._backend_error: str | None = None
+        self._current_phase = self.pre_phases[-1]["name"] if self.pre_phases else "compile"
 
     # -- helpers ----------------------------------------------------------
 
@@ -188,6 +204,7 @@ class GoalRuntime:
             self._printer(text)
 
     def _phase(self, name: str, title: str) -> None:
+        self._current_phase = name
         self._say(f"\n=== phase: {name} — {title} ===")
         self.trace.record(name, Event.PHASE_STARTED, {"title": title})
 
@@ -212,21 +229,148 @@ class GoalRuntime:
         )
         self._say(f"objective: {self.plan['objective']}")
 
-        self._prepare_context()
-        self._collect_evidence()
-        self._build_messages()
-        backend_ok = self._call_backend()
-        if backend_ok:
-            parsed_ok = self._parse_output()
-        else:
-            parsed_ok = False
-        if parsed_ok:
-            verification = self._verify_output()
-            self._apply_uncertainty_policy()
-        else:
-            verification = self._skip_verification()
-        self._enforce_action_policy()
-        return self._finalize(verification)
+        try:
+            self._prepare_context()
+            self._collect_evidence()
+            self._build_messages()
+            backend_ok = self._call_backend()
+            if backend_ok:
+                parsed_ok = self._parse_output()
+            else:
+                parsed_ok = False
+            if parsed_ok:
+                verification = self._verify_output()
+                self._apply_uncertainty_policy()
+            else:
+                verification = self._skip_verification()
+            self._enforce_action_policy()
+            return self._finalize(verification)
+        except RunFailed:
+            raise
+        except Exception as exc:
+            result = self._failure_result(exc)
+            raise RunFailed(
+                f"run failed during {result['failure']['phase']}: "
+                f"{result['failure']['type']}: {result['failure']['message']}",
+                result,
+            ) from exc
+
+    def _failure_result(self, exc: Exception) -> dict[str, Any]:
+        """Build a classified partial result from state already captured.
+
+        The terminal ``run_failed`` event is appended to the same hash chain as
+        all prior evidence when the trace writer still accepts events. If the
+        streaming sink itself is what failed, the in-memory prefix is retained
+        but durable recording is explicitly not claimed.
+        """
+        phase = self._current_phase
+        failure: dict[str, Any] = {
+            "type": type(exc).__name__,
+            "message": str(exc),
+            "phase": phase,
+        }
+        if not self.phases or self.phases[-1].get("name") != phase:
+            self.phases.append({"name": phase, "status": "failed", "detail": str(exc)})
+        elif self.phases[-1].get("status") == "completed":
+            self.phases.append({"name": phase, "status": "failed", "detail": str(exc)})
+
+        try:
+            self.trace.record(phase, "run_failed", failure)
+            failure["terminal_event_recorded"] = True
+        except Exception as trace_exc:
+            failure["terminal_event_recorded"] = False
+            failure["trace_recording_error"] = f"{type(trace_exc).__name__}: {trace_exc}"
+
+        trace_events = self.trace.to_list()
+        try:
+            chain = self.trace.seal()
+        except Exception as seal_exc:
+            chain = None
+            failure["seal_error"] = f"{type(seal_exc).__name__}: {seal_exc}"
+
+        trace_id = None
+        if chain is not None:
+            plan_digest = hashlib.sha256(
+                json.dumps(self.plan, sort_keys=True, default=str).encode("utf-8")
+            ).hexdigest()
+            trace_id = hashlib.sha256(
+                f"{plan_digest}{chain['root']}".encode("utf-8")
+            ).hexdigest()[:16]
+
+        completed_phases = {item.get("name") for item in self.phases}
+        remaining_checks = [
+            name
+            for name in self.plan.get("execution_phases", [])
+            if name not in completed_phases
+        ]
+        declared_outputs = {
+            field["name"] for field in self.plan.get("output_schema", {}).get("fields", [])
+        }
+        missing_outputs = sorted(declared_outputs - set(self.outputs))
+        receipt = {
+            "requested_goal": self.plan["goal"],
+            "evidence_captured": [item.get("id") for item in self.evidence],
+            "side_effect_boundary": "see trace action/tool events captured before failure",
+            "checks_not_completed": remaining_checks,
+            "missing_or_unverified_outputs": missing_outputs,
+            "verdict": "failed-but-auditable" if chain is not None else "incomplete/no-sealed-receipt",
+        }
+        summary = {
+            "trace_id": trace_id,
+            "status": "failed",
+            "confidence": self.confidence,
+            "verification_status": "not_completed",
+            "uncertainty_status": "unknown",
+            "actions_requested": [
+                e.get("detail", {}).get("action")
+                for e in trace_events
+                if e.get("event") == Event.TOOL_INVOKED
+            ],
+            "actions_blocked": [
+                {
+                    "action": e.get("detail", {}).get("action"),
+                    "reason": e.get("detail", {}).get("reason"),
+                }
+                for e in trace_events
+                if e.get("event") in (Event.ACTION_BLOCKED, Event.APPROVAL_DENIED)
+            ],
+            "escalation_count": len(self.escalations),
+        }
+        return {
+            "format_version": TRACE_FORMAT_VERSION,
+            "goal": self.plan["goal"],
+            "backend": self.backend.name,
+            "model": self.response.model if self.response else None,
+            "status": "failed",
+            "complete": False,
+            "failure": failure,
+            "failure_receipt": receipt,
+            "phases": self.phases,
+            "diagnostics": self.diagnostics,
+            "messages": self.messages,
+            "evidence": self.evidence,
+            "backend_response": self.response.to_dict() if self.response else None,
+            "backend_error": self._backend_error,
+            "outputs": self.outputs,
+            "citations": self.citations,
+            "confidence": {"raw": self.raw_confidence, "calibrated": self.confidence},
+            "verification": {
+                "passed": False,
+                "status": "not_completed",
+                "checks": [],
+                "tiers": {},
+            },
+            "uncertainty": {
+                "signals": self.signals,
+                "decisions": self.uncertainty_decisions,
+            },
+            "action_decisions": getattr(self, "action_decisions", {}),
+            "escalations": self.escalations,
+            "summary": summary,
+            "trace_id": trace_id,
+            "trace": trace_events,
+            "trace_chain": chain,
+        }
 
     # -- phases -----------------------------------------------------------
 
@@ -984,7 +1128,8 @@ _STATUS_SEVERITY = {
     "failed_verification": 2,
     "blocked": 3,
     "backend_error": 4,
-    "failed_validation": 5,
+    "failed": 5,
+    "failed_validation": 6,
 }
 
 
@@ -1051,7 +1196,21 @@ def run_pipeline(
             signers=signers,
             trace_sink=trace_sink,
         )
-        result = runtime.run()
+        try:
+            result = runtime.run()
+        except RunFailed as exc:
+            result = exc.result
+            stage_results.append(result)
+            combined_trace.extend({**event, "stage": stage_name} for event in result["trace"])
+            pipeline_result = {
+                "pipeline": pipeline_name,
+                "status": "failed",
+                "complete": False,
+                "failure": result.get("failure"),
+                "stages": stage_results,
+                "trace": combined_trace,
+            }
+            raise RunFailed(str(exc), pipeline_result) from exc
         outputs_by_goal[stage_name] = result["outputs"]
         stage_results.append(result)
         combined_trace.extend({**event, "stage": stage_name} for event in result["trace"])
