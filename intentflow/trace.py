@@ -55,6 +55,7 @@ class TraceSigner(Protocol):
 
     def sign_entry(self, root: str) -> dict[str, Any]: ...
 
+
 #: Version of the *result/trace (witness) format* — the shape of the run-result
 #: envelope a run emits and the auditor consumes. Independent of the plan format
 #: version (``compiler.PLAN_FORMAT_VERSION``) and of the package version. Bumped
@@ -98,6 +99,7 @@ class Event:
     PHASE_STARTED = "phase_started"
     RUN_STARTED = "run_started"
     RUN_COMPLETED = "run_completed"
+    RUN_FAILED = "run_failed"
     STATUS_RESOLVED = "status_resolved"
 
     # -- context / evidence --
