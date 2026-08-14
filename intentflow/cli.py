@@ -21,6 +21,7 @@ import datetime as _dt
 import json
 import os
 import sys
+import tempfile
 from pathlib import Path
 
 from intentflow._version import __version__
@@ -38,7 +39,7 @@ from intentflow.explain import explain_program, render_explanation
 from intentflow.formatter import format_source
 from intentflow.judges import make_judge
 from intentflow.parser import ParseError, parse_file
-from intentflow.runtime import GoalRuntime, execute_program, run_pipeline
+from intentflow.runtime import GoalRuntime, RunFailed, execute_program, run_pipeline
 from intentflow.tools import PreGrantedApprover, TTYApprover, WebhookApprover
 
 
@@ -171,6 +172,29 @@ def build_witness_envelope(document: dict, result: dict, backend_name: str, prog
     }
 
 
+def _atomic_write_text(path: Path, payload: str) -> None:
+    """Write ``payload`` in the target directory and atomically replace ``path``.
+
+    A storage error leaves either the previous complete file or no claimed new
+    artifact; it never deliberately leaves a half-written JSON witness.
+    """
+    fd, tmp_name = tempfile.mkstemp(
+        prefix=f".{path.name}.", suffix=".tmp", dir=str(path.parent)
+    )
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as handle:
+            handle.write(payload)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(tmp_name, path)
+    except Exception:
+        try:
+            os.unlink(tmp_name)
+        except OSError:
+            pass
+        raise
+
+
 def _write_trace_artifact(
     trace_dir: str, document: dict, result: dict, backend_name: str, program
 ) -> str:
@@ -183,7 +207,7 @@ def _write_trace_artifact(
     timestamp = _dt.datetime.now(_dt.timezone.utc).strftime("%Y%m%dT%H%M%SZ")
     path = directory / f"{label}-{timestamp}-{trace_id}.json"
     envelope = build_witness_envelope(document, result, backend_name, program)
-    path.write_text(json.dumps(envelope, indent=2), encoding="utf-8")
+    _atomic_write_text(path, json.dumps(envelope, indent=2))
     return str(path)
 
 
@@ -203,6 +227,12 @@ def _print_run_summary(result: dict) -> None:
     blocked = [b.get("action") for b in summary.get("actions_blocked", [])]
     print(f"  actions blocked:    {blocked or '(none)'}")
     print(f"  trace id:           {summary.get('trace_id')}")
+    if result.get("failure"):
+        failure = result["failure"]
+        print(
+            f"  failure:            {failure.get('type')} during "
+            f"{failure.get('phase')}: {failure.get('message')}"
+        )
     if result.get("escalations"):
         print("  escalations:")
         for esc in result["escalations"]:
@@ -321,63 +351,74 @@ def cmd_run(args: argparse.Namespace) -> int:
     stream = open(args.trace_stream, "w", encoding="utf-8") if args.trace_stream else None
     if stream is not None:
         seal_kwargs["trace_sink"] = stream
+    runtime_failed = False
+    results: list[dict] = []
     try:
-        if args.pipeline:
-            document = _compile_or_fail(program)
-            names = [p["name"] for p in document["pipelines"]]
-            if args.pipeline not in names:
-                print(
-                    f"error: pipeline {args.pipeline!r} not found; available: {names}",
-                    file=sys.stderr,
-                )
-                return 1
-            results = [
-                run_pipeline(
-                    document,
-                    args.pipeline,
-                    backend=backend,
-                    printer=printer,
-                    workspace=args.workspace,
-                    approver=approver,
-                    judge=judge,
-                    **seal_kwargs,
-                )
-            ]
-        elif args.goal:
-            document = _compile_or_fail(program)
-            results = [
-                execute_program(
-                    program,
-                    args.goal,
-                    backend=backend,
-                    printer=printer,
-                    workspace=args.workspace,
-                    approver=approver,
-                    judge=judge,
-                    **seal_kwargs,
-                )
-            ]
-        else:
-            # Compile up front for the trace artifact, but let execute_program own
-            # the analyze/compile phases so failed_validation is a *status*.
-            diagnostics = analyze_program(program)
-            document = compile_program(program) if not errors_in(diagnostics) else {}
-            results = [
-                execute_program(
-                    program,
-                    goal.name,
-                    backend=backend,
-                    printer=printer,
-                    workspace=args.workspace,
-                    approver=approver,
-                    judge=judge,
-                    **seal_kwargs,
-                )
-                for goal in program.goals
-            ]
-            # Deduplicate: a failed_validation result is identical per goal.
-            if results and results[0]["status"] == "failed_validation":
-                results = results[:1]
+        try:
+            if args.pipeline:
+                document = _compile_or_fail(program)
+                names = [p["name"] for p in document["pipelines"]]
+                if args.pipeline not in names:
+                    print(
+                        f"error: pipeline {args.pipeline!r} not found; available: {names}",
+                        file=sys.stderr,
+                    )
+                    return 1
+                results = [
+                    run_pipeline(
+                        document,
+                        args.pipeline,
+                        backend=backend,
+                        printer=printer,
+                        workspace=args.workspace,
+                        approver=approver,
+                        judge=judge,
+                        **seal_kwargs,
+                    )
+                ]
+            elif args.goal:
+                document = _compile_or_fail(program)
+                results = [
+                    execute_program(
+                        program,
+                        args.goal,
+                        backend=backend,
+                        printer=printer,
+                        workspace=args.workspace,
+                        approver=approver,
+                        judge=judge,
+                        **seal_kwargs,
+                    )
+                ]
+            else:
+                # Compile up front for the trace artifact, but let execute_program own
+                # the analyze/compile phases so failed_validation is a *status*.
+                diagnostics = analyze_program(program)
+                document = compile_program(program) if not errors_in(diagnostics) else {}
+                for goal in program.goals:
+                    try:
+                        results.append(
+                            execute_program(
+                                program,
+                                goal.name,
+                                backend=backend,
+                                printer=printer,
+                                workspace=args.workspace,
+                                approver=approver,
+                                judge=judge,
+                                **seal_kwargs,
+                            )
+                        )
+                    except RunFailed as exc:
+                        results.append(exc.result)
+                        runtime_failed = True
+                        break
+                # Deduplicate: a failed_validation result is identical per goal.
+                if results and results[0]["status"] == "failed_validation":
+                    results = results[:1]
+        except RunFailed as exc:
+            results = [exc.result]
+            runtime_failed = True
     finally:
         if stream is not None:
             stream.close()
@@ -391,10 +432,15 @@ def cmd_run(args: argparse.Namespace) -> int:
         for result in results:
             _print_run_summary(result)
 
-    exit_code = 0
+    exit_code = 1 if runtime_failed else 0
     for result in results:
-        if result["status"] in ("failed_validation", "failed_verification",
-                                "backend_error", "blocked"):
+        if result["status"] in (
+            "failed_validation",
+            "failed_verification",
+            "backend_error",
+            "blocked",
+            "failed",
+        ):
             exit_code = 1
         if result["status"] == "failed_validation" and not args.json:
             for diag in result.get("diagnostics", []):
@@ -405,33 +451,37 @@ def cmd_run(args: argparse.Namespace) -> int:
                         file=sys.stderr,
                     )
 
-    if args.trace_dir:
-        for result in results:
-            if result["status"] == "failed_validation":
-                continue  # nothing executed; no witness to save
-            path = _write_trace_artifact(
-                args.trace_dir, document, result, backend.name, program
-            )
-            print(f"\ntrace written to {path}")
+    try:
+        if args.trace_dir:
+            for result in results:
+                if result["status"] == "failed_validation":
+                    continue  # nothing executed; no witness to save
+                path = _write_trace_artifact(
+                    args.trace_dir, document, result, backend.name, program
+                )
+                print(f"\ntrace written to {path}")
+                print("  inspect it with 'intentflow replay', verify it with 'intentflow audit'")
+        if args.trace_out:
+            writable = [r for r in results if r["status"] != "failed_validation"]
+            if len(writable) != 1:
+                # --trace-out is one explicit path, so it takes exactly one witness.
+                # A multi-goal run (or a run where everything failed validation) has
+                # no single result to write here; direct the user to the per-result
+                # forms instead of silently writing a bare list audit cannot consume.
+                print(
+                    f"error: --trace-out writes a single witness, but this run produced "
+                    f"{len(writable)} auditable result(s); use --trace-dir (one file per "
+                    f"result) or --goal NAME to select one goal",
+                    file=sys.stderr,
+                )
+                return exit_code or 1
+            envelope = build_witness_envelope(document, writable[0], backend.name, program)
+            _atomic_write_text(Path(args.trace_out), json.dumps(envelope, indent=2))
+            print(f"\ntrace written to {args.trace_out}")
             print("  inspect it with 'intentflow replay', verify it with 'intentflow audit'")
-    if args.trace_out:
-        writable = [r for r in results if r["status"] != "failed_validation"]
-        if len(writable) != 1:
-            # --trace-out is one explicit path, so it takes exactly one witness.
-            # A multi-goal run (or a run where everything failed validation) has
-            # no single result to write here; direct the user to the per-result
-            # forms instead of silently writing a bare list audit cannot consume.
-            print(
-                f"error: --trace-out writes a single witness, but this run produced "
-                f"{len(writable)} auditable result(s); use --trace-dir (one file per "
-                f"result) or --goal NAME to select one goal",
-                file=sys.stderr,
-            )
-            return exit_code or 1
-        envelope = build_witness_envelope(document, writable[0], backend.name, program)
-        Path(args.trace_out).write_text(json.dumps(envelope, indent=2), encoding="utf-8")
-        print(f"\ntrace written to {args.trace_out}")
-        print("  inspect it with 'intentflow replay', verify it with 'intentflow audit'")
+    except OSError as exc:
+        print(f"error: could not write trace artifact atomically: {exc}", file=sys.stderr)
+        return 1
     return exit_code
 
 
@@ -445,7 +495,6 @@ def cmd_format(args: argparse.Namespace) -> int:
     # Parse first so we never reformat syntactically broken source.
     _load(args.file)
     formatted = format_source(original)
-
     if args.check:
         if formatted != original:
             print(f"{args.file}: not formatted (run 'intentflow format' to fix)",
@@ -549,6 +598,13 @@ def cmd_replay(args: argparse.Namespace) -> int:
         for phase in phases:
             detail = f" — {phase['detail']}" if phase.get("detail") else ""
             print(f"  {phase['status']:<9} {phase['name']}{detail}")
+
+    failure = result.get("failure")
+    if failure:
+        print("\nfailure:")
+        print(f"  type:  {failure.get('type')}")
+        print(f"  phase: {failure.get('phase')}")
+        print(f"  error: {failure.get('message')}")
 
     evidence = result.get("evidence", [])
     if evidence:
@@ -736,7 +792,6 @@ def build_parser() -> argparse.ArgumentParser:
     p_compile.set_defaults(func=cmd_compile)
 
     p_run = sub.add_parser("run", help="execute a .iflow file")
-    p_run.add_argument("file")
     # Flags are organized into argument groups (help rendering only; parsing is
     # unchanged) per the surface budget in docs/cli-conventions.md.
     g_backend = p_run.add_argument_group("backend")
