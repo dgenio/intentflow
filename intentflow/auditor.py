@@ -14,10 +14,12 @@ that the agent stayed inside its envelope:
   if sealed/signed, the root and HMAC signature verify;
 * ``E1`` — every citation in the result points at collected evidence;
 * ``U1`` — every uncertainty rule in the plan was evaluated or recorded;
-* ``V1`` — every verification rule in the plan was checked, and no failed
-  machine check was dropped from the result;
-* ``S1`` — the reported status is consistent with the trace (a failed
-  verification or a human escalation cannot be reported as ``completed``);
+* ``V1`` — every verification rule in the plan was checked, every reported
+  check status matches the witnessed status, and skipped/unevaluable checks
+  cannot be upgraded into successful verification;
+* ``S1`` — the reported status is consistent with the trace (failed or
+  incomplete verification, or a human escalation, cannot be reported as
+  ``completed``);
 * ``O1`` — the produced outputs match the declared output schema.
 
 Two structural, plan-level codes cover inputs the auditor cannot verify:
@@ -38,7 +40,7 @@ import hashlib
 import hmac
 import json
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, Iterable
 
 from intentflow.compiler import PLAN_FORMAT_VERSION
 from intentflow.trace import (
@@ -66,6 +68,16 @@ _EXECUTED_STATUSES = ("completed", "needs_human", "blocked", "failed_verificatio
 class Violation:
     code: str
     message: str
+
+
+def _verification_status(statuses: Iterable[str]) -> str:
+    """Derive fail-closed aggregate verification state from check statuses."""
+    values = list(statuses)
+    if any(status == "fail" for status in values):
+        return "failed"
+    if not values or any(status != "pass" for status in values):
+        return "incomplete"
+    return "passed"
 
 
 def _verify_hmac_signature(
@@ -331,41 +343,52 @@ def _check_verification_coverage(
     plan: dict[str, Any], result: dict[str, Any], trace: list[dict[str, Any]]
 ) -> list[Violation]:
     violations: list[Violation] = []
-    checked = {
-        event["detail"].get("id")
+    witnessed = {
+        event["detail"].get("id"): event["detail"].get("status")
         for event in trace
         if event["event"] == Event.CHECK_EVALUATED
     }
     for rule in plan["verification_policy"]["rules"]:
-        if rule["rule_id"] not in checked:
+        if rule["rule_id"] not in witnessed:
             violations.append(
                 Violation("V1", f"verification rule {rule['rule_id']} was never checked")
             )
-    failed_in_trace = {
-        event["detail"]["id"]
-        for event in trace
-        if event["event"] == Event.CHECK_EVALUATED and event["detail"].get("status") == "fail"
-    }
+
+    verification = result.get("verification", {})
     reported = {
         check["id"]: check["status"]
-        for check in result.get("verification", {}).get("checks", [])
+        for check in verification.get("checks", [])
     }
-    for rule_id in failed_in_trace:
-        if reported.get(rule_id) != "fail":
+    for check_id, witnessed_status in witnessed.items():
+        if check_id is None:
+            continue
+        reported_status = reported.get(check_id)
+        if reported_status != witnessed_status:
             violations.append(
                 Violation(
                     "V1",
-                    f"check {rule_id} failed in the trace but the result does "
-                    "not report the failure",
+                    f"check {check_id} was {witnessed_status!r} in the trace but "
+                    f"the result reports {reported_status!r}",
                 )
             )
-    claimed_passed = result.get("verification", {}).get("passed")
-    actually_passed = all(status != "fail" for status in reported.values())
+
+    actual_status = _verification_status(reported.values())
+    actually_passed = actual_status == "passed"
+    claimed_passed = verification.get("passed")
     if claimed_passed is not None and claimed_passed != actually_passed:
         violations.append(
             Violation(
                 "V1",
                 "the result's verification 'passed' flag contradicts its own checks",
+            )
+        )
+    claimed_status = verification.get("status")
+    if claimed_status is not None and claimed_status != actual_status:
+        violations.append(
+            Violation(
+                "V1",
+                f"the result's verification status {claimed_status!r} contradicts "
+                f"the check-derived status {actual_status!r}",
             )
         )
     return violations
@@ -376,12 +399,16 @@ def _check_status_consistency(result: dict[str, Any]) -> list[Violation]:
     if status != "completed":
         return []
     violations: list[Violation] = []
-    if result.get("verification", {}).get("passed") is False:
+    verification = result.get("verification", {})
+    check_status = _verification_status(
+        check.get("status") for check in verification.get("checks", [])
+    )
+    if verification.get("passed") is False or check_status != "passed":
         violations.append(
             Violation(
                 "S1",
-                "status is 'completed' but verification failed; a failed "
-                "verification may never be reported as success",
+                "status is 'completed' but verification did not fully pass; "
+                "failed or incomplete verification may never be reported as success",
             )
         )
     if result.get("escalations"):
