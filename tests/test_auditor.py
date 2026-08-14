@@ -9,6 +9,7 @@ import pytest
 
 from intentflow.auditor import audit_document, audit_result
 from intentflow.compiler import compile_program
+from intentflow.judges import SimulatedJudge
 from intentflow.parser import parse_file
 from intentflow.runtime import GoalRuntime, run_pipeline
 
@@ -31,7 +32,9 @@ def test_honest_run_is_conformant(diagnose: tuple[dict, dict]) -> None:
 
 def test_completed_triage_run_is_conformant() -> None:
     document = compile_program(parse_file("examples/opensource_triage.iflow"))
-    result = GoalRuntime(document["goals"][0], printer=None).run()
+    result = GoalRuntime(
+        document["goals"][0], printer=None, judge=SimulatedJudge()
+    ).run()
     assert result["status"] == "completed"
     assert audit_document(document, result)["conformant"] is True
 

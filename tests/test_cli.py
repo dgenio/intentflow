@@ -372,11 +372,14 @@ def test_format_write_makes_check_pass(tmp_path) -> None:
 def test_triage_example_runs_and_audits() -> None:
     from intentflow.auditor import audit_document
     from intentflow.compiler import compile_program
+    from intentflow.judges import SimulatedJudge
     from intentflow.parser import parse_file
     from intentflow.runtime import GoalRuntime
 
     document = compile_program(parse_file(TRIAGE))
-    result = GoalRuntime(document["goals"][0], printer=None).run()
+    result = GoalRuntime(
+        document["goals"][0], printer=None, judge=SimulatedJudge()
+    ).run()
     assert result["status"] == "completed"
     report = audit_document(document, result)
     assert report["conformant"] is True

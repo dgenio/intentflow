@@ -82,13 +82,14 @@ def test_llm_judge_retries_transient_chat_failures() -> None:
     assert calls["n"] == 2
 
 
-def test_without_judge_judged_rules_are_skipped_not_passed() -> None:
+def test_without_judge_judged_rules_are_incomplete_not_passed() -> None:
     result = _run(judge=None)
     check = _judged_check(result)
     assert check["status"] == "skipped"
     assert "judged_by" not in check
-    # A skipped judged rule does not block completion...
-    assert result["verification"]["passed"] is True
+    assert result["verification"]["passed"] is False
+    assert result["verification"]["status"] == "incomplete"
+    assert result["status"] == "failed_verification"
 
 
 def test_judge_can_pass_a_judged_rule() -> None:

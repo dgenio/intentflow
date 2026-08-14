@@ -8,7 +8,10 @@
 # Try:
 #   intentflow validate examples/opensource_triage.iflow
 #   intentflow explain  examples/opensource_triage.iflow
-#   intentflow run      examples/opensource_triage.iflow --trace-dir traces
+#   intentflow run      examples/opensource_triage.iflow --judge simulate --trace-dir traces
+#
+# The judged verification rules are mandatory. Omitting --judge intentionally
+# leaves verification incomplete and the run fails closed.
 goal TriageGitHubIssue {
   meta:
     description "governed open-source issue triage"

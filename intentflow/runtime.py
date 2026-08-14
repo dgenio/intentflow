@@ -18,8 +18,9 @@ that makes the process *governed* lives here, outside the model:
   that decides the run's final status;
 * verification executes the *typed* checks the compiler emitted — machine
   checks (output schema conformance, citations, thresholds) are evaluated,
-  judged checks are recorded as skipped unless a judge is configured, and a
-  failed verification can never be reported as success;
+  judged checks are recorded as skipped unless a judge is configured, and any
+  skipped/unevaluable required check makes verification incomplete rather than
+  successful;
 * every event lands in an append-only, hash-chained trace that
   ``intentflow audit`` can later replay against the plan.
 
@@ -29,7 +30,7 @@ A run always ends in exactly one status:
 * ``needs_human``         — an uncertainty rule escalated to a human
 * ``blocked``             — policy blocked the action (``block_action``)
 * ``failed_validation``   — analyzer errors; nothing was executed
-* ``failed_verification`` — output produced but a machine check failed
+* ``failed_verification`` — output produced but verification failed or was incomplete
 * ``backend_error``       — the backend failed or returned unusable output
 """
 
@@ -453,7 +454,7 @@ class GoalRuntime:
         self.trace.record(
             "apply_uncertainty_policy", Event.PHASE_STARTED, {"title": "skipped"}
         )
-        return {"passed": False, "checks": [], "tiers": {}}
+        return {"passed": False, "status": "not_run", "checks": [], "tiers": {}}
 
     def _verify_output(self) -> dict[str, Any]:
         which = f"judge: {self.judge.name}" if self.judge else "machine checks only"
@@ -478,7 +479,13 @@ class GoalRuntime:
             # independent witness of what happened at this moment.
             self.trace.record("verify_output", Event.CHECK_EVALUATED, dict(check))
 
-        passed = all(c["status"] != "fail" for c in checks)
+        if any(c["status"] == "fail" for c in checks):
+            verification_status = "failed"
+        elif any(c["status"] != "pass" for c in checks):
+            verification_status = "incomplete"
+        else:
+            verification_status = "passed"
+        passed = verification_status == "passed"
         # Keep the two trust tiers visible and separate: a machine check is a
         # proof; a judged check is a model's opinion. They are reported apart
         # so neither is mistaken for the other.
@@ -486,10 +493,17 @@ class GoalRuntime:
             tier: self._tier_summary(checks, tier) for tier in ("machine", "judged")
         }
         self.trace.record(
-            "verify_output", Event.CHECKLIST_COMPLETED, {"passed": passed, "tiers": tiers}
+            "verify_output",
+            Event.CHECKLIST_COMPLETED,
+            {"passed": passed, "status": verification_status, "tiers": tiers},
         )
-        self._phase_done("verify_output", detail="passed" if passed else "failed")
-        return {"passed": passed, "checks": checks, "tiers": tiers}
+        self._phase_done("verify_output", detail=verification_status)
+        return {
+            "passed": passed,
+            "status": verification_status,
+            "checks": checks,
+            "tiers": tiers,
+        }
 
     def _schema_check(self) -> dict[str, Any]:
         """The implicit machine check V0: outputs conform to the schema."""
@@ -559,9 +573,17 @@ class GoalRuntime:
             note = f"{metric} {observed:.2f} {op} {value}"
             return ("pass" if ok else "fail"), note, None
         # Judged rule: run the LLM judge if one is configured (separate trust
-        # tier). With no judge, record as skipped — never silently passed.
+        # tier). With no judge, record as skipped; aggregate verification is
+        # incomplete, never silently passed.
         if self.judge is not None:
-            verdict = self.judge.judge(rule["description"], self._judge_context())
+            try:
+                verdict = self.judge.judge(rule["description"], self._judge_context())
+            except Exception as exc:
+                return (
+                    "skipped",
+                    f"judge evaluation failed: {type(exc).__name__}: {exc}",
+                    self.judge.name,
+                )
             return ("pass" if verdict.passed else "fail"), verdict.rationale, self.judge.name
         return "skipped", "judged rule; no judge configured (recorded, not evaluated)", None
 
@@ -833,7 +855,9 @@ class GoalRuntime:
             "trace_id": digest,
             "status": status,
             "confidence": self.confidence,
-            "verification_status": "passed" if verification["passed"] else "failed",
+            "verification_status": verification.get(
+                "status", "passed" if verification["passed"] else "failed"
+            ),
             "uncertainty_status": "escalated" if self.escalations else "clear",
             "actions_requested": requested,
             "actions_blocked": blocked,
@@ -933,7 +957,7 @@ def _validation_failure(
         "outputs": {},
         "citations": [],
         "confidence": {"raw": None, "calibrated": None},
-        "verification": {"passed": False, "checks": [], "tiers": {}},
+        "verification": {"passed": False, "status": "not_run", "checks": [], "tiers": {}},
         "uncertainty": {"signals": {}, "decisions": []},
         "action_decisions": {},
         "escalations": [],

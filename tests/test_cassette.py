@@ -194,16 +194,23 @@ def test_api_threads_run_cassette_to_the_judge(tmp_path) -> None:
     # verdicts). Before the fix `_judge` dropped the cassette, so `judge="replay"`
     # raised "the 'replay' judge requires a cassette path" even when one was
     # supplied. Now the cassette reaches the replay judge: with no recorded
-    # verdict it misses on the rule (fail-closed BackendError) instead.
+    # verdict the judge error is captured as an incomplete mandatory check, so
+    # the run fails closed while preserving an auditable result.
     from intentflow.api import IntentFlowProgram
-    from intentflow.backends import BackendError
 
     cpath = tmp_path / "empty-judge.cassette.json"
     Cassette(cpath).save()  # a real cassette, but without this run's verdict
     program = IntentFlowProgram(parse_source(_JUDGED_SRC))
 
-    with pytest.raises(BackendError, match="no recorded judge reply"):
-        program.run(backend="simulate", judge="replay", cassette=cpath)
+    result = program.run(backend="simulate", judge="replay", cassette=cpath)
+    assert result["status"] == "failed_verification"
+    # The missing replay verdict is incomplete, while the simulated
+    # backend also leaves the machine citation rule failed; aggregate status is
+    # therefore the stronger `failed` state.
+    assert result["verification"]["status"] == "failed"
+    judged = [c for c in result["verification"]["checks"] if c["mode"] == "judged"]
+    assert judged and judged[0]["status"] == "skipped"
+    assert "no recorded judge reply" in judged[0]["note"]
 
 
 def test_recording_backend_propagates_usage_metadata(tmp_path) -> None:
