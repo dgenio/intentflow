@@ -7,6 +7,7 @@ import pytest
 
 from intentflow.backends import MockBackend
 from intentflow.compiler import EXECUTION_PHASES, compile_goal
+from intentflow.judges import SimulatedJudge
 from intentflow.parser import parse_file, parse_source
 from intentflow.runtime import GoalRuntime, execute_program
 
@@ -22,12 +23,17 @@ def _plan(path_or_source: str) -> dict:
 
 
 def _run(path_or_source: str, **kwargs) -> dict:
+    # The flagship declares mandatory judged rules. Tests that expect a fully
+    # verified successful run must therefore provide a judge explicitly; using
+    # the deterministic simulated judge keeps the suite offline.
+    if path_or_source == TRIAGE and "judge" not in kwargs:
+        kwargs["judge"] = SimulatedJudge()
     return GoalRuntime(_plan(path_or_source), printer=None, **kwargs).run()
 
 
 @pytest.fixture(scope="module")
 def triage_result() -> dict:
-    return GoalRuntime(_plan(TRIAGE), printer=None).run()
+    return _run(TRIAGE)
 
 
 # -- statuses ---------------------------------------------------------------
@@ -36,6 +42,7 @@ def triage_result() -> dict:
 def test_flagship_example_completes(triage_result: dict) -> None:
     assert triage_result["status"] == "completed"
     assert triage_result["verification"]["passed"] is True
+    assert triage_result["verification"]["status"] == "passed"
     assert triage_result["escalations"] == []
 
 
@@ -120,7 +127,7 @@ def test_failed_validation_via_execute_program() -> None:
 
 
 def test_execute_program_runs_all_phases() -> None:
-    result = execute_program(parse_file(TRIAGE))
+    result = execute_program(parse_file(TRIAGE), judge=SimulatedJudge())
     assert result["status"] == "completed"
     assert [p["name"] for p in result["phases"]] == list(EXECUTION_PHASES)
     assert all(p["status"] == "completed" for p in result["phases"])
