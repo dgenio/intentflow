@@ -1,0 +1,68 @@
+name: Temporary final verification patch for #160
+
+on:
+  push:
+    branches:
+      - agent/fail-closed-verification-160
+
+permissions:
+  contents: write
+
+jobs:
+  finalize:
+    if: ${{ !contains(github.event.head_commit.message, '[agent-finalize-160]') }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: agent/fail-closed-verification-160
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97
+        with:
+          python-version: '3.12'
+      - name: Align remaining tests with mandatory-judge contract
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+
+          def replace_once(path: str, old: str, new: str) -> None:
+              p = Path(path)
+              text = p.read_text(encoding="utf-8")
+              if text.count(old) != 1:
+                  raise SystemExit(f"expected one match in {path}, got {text.count(old)}")
+              p.write_text(text.replace(old, new, 1), encoding="utf-8")
+
+          replace_once(
+              "tests/test_auditor.py",
+              "from intentflow.compiler import compile_program\n",
+              "from intentflow.compiler import compile_program\nfrom intentflow.judges import SimulatedJudge\n",
+          )
+          replace_once(
+              "tests/test_auditor.py",
+              '''    result = GoalRuntime(document["goals"][0], printer=None).run()\n    assert result["status"] == "completed"\n''',
+              '''    result = GoalRuntime(\n        document["goals"][0], printer=None, judge=SimulatedJudge()\n    ).run()\n    assert result["status"] == "completed"\n''',
+          )
+          replace_once(
+              "tests/test_cli.py",
+              '''    from intentflow.parser import parse_file\n    from intentflow.runtime import GoalRuntime\n\n    document = compile_program(parse_file(TRIAGE))\n    result = GoalRuntime(document["goals"][0], printer=None).run()\n''',
+              '''    from intentflow.judges import SimulatedJudge\n    from intentflow.parser import parse_file\n    from intentflow.runtime import GoalRuntime\n\n    document = compile_program(parse_file(TRIAGE))\n    result = GoalRuntime(\n        document["goals"][0], printer=None, judge=SimulatedJudge()\n    ).run()\n''',
+          )
+          replace_once(
+              "tests/test_cassette.py",
+              '''    assert result["verification"]["status"] == "incomplete"\n''',
+              '''    # The missing replay verdict is incomplete, while the simulated\n    # backend also leaves the machine citation rule failed; aggregate status is\n    # therefore the stronger `failed` state.\n    assert result["verification"]["status"] == "failed"\n''',
+          )
+          PY
+          git diff --check
+      - name: Run full test suite
+        run: |
+          python -m pip install -e . --group dev
+          python -m pytest -q
+      - name: Commit verified adjustments
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add tests/test_auditor.py tests/test_cli.py tests/test_cassette.py
+          if ! git diff --cached --quiet; then
+            git commit -m "[agent-finalize-160] Align tests with fail-closed verification"
+            git push origin HEAD:agent/fail-closed-verification-160
+          fi
