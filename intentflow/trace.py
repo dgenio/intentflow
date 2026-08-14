@@ -177,7 +177,6 @@ def assert_json_native(value: Any, _path: str = "detail") -> None:
     loud error at the exact call site that introduced it. See
     ``docs/adr/0001-canonical-json-hashing.md``.
     """
-    # bool is a subclass of int; both are JSON-native, so no special-casing.
     if value is None or isinstance(value, (str, int, float)):
         return
     if isinstance(value, dict):
@@ -243,30 +242,23 @@ class Trace:
         self._prev = GENESIS_HASH
         self._sign_key = sign_key
         self._key_id = key_id
-        #: Additional (e.g. public-key) signers applied to the root at seal time.
         self._signers: list[TraceSigner] = list(signers or [])
-        #: Optional append-only JSONL sink: each event is written and flushed as
-        #: it is recorded, so a hard crash still leaves a chain-verifiable prefix
-        #: and long runs need not hold the whole trace in memory to persist it.
         self._sink = sink
 
     def record(self, phase: str, event: str, detail: dict[str, Any] | None = None) -> None:
+        snapshot = dict(detail or {})
         entry = {
             "seq": len(self.events) + 1,
             "phase": phase,
             "event": event,
-            "detail": detail or {},
+            "detail": snapshot,
         }
-        # Enforce the JSON-native domain before the value enters the hash chain,
-        # so the canonical form stays well-defined (no silent str() coercion).
         assert_json_native(entry["detail"], f"{event}.detail")
         entry["prev_hash"] = self._prev
         entry["hash"] = link_hash(self._prev, entry)
         self._prev = entry["hash"]
         self.events.append(entry)
         if self._sink is not None:
-            # Fail closed: if the witness cannot be persisted, stop the run
-            # rather than continue with an incomplete on-disk record.
             try:
                 self._sink.write(json.dumps(entry) + "\n")
                 self._sink.flush()
